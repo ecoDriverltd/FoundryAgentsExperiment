@@ -1,0 +1,21 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UserSecretsId>39c4cf09-34af-4d39-8305-2f3c9161e2cc</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.AgentFramework.DevUI" Version="1.12.0-preview.260629.1" />
+    <PackageReference Include="Aspire.Hosting.Foundry" Version="13.4.6-preview.1.26319.6" />
+    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.12.0-preview.260629.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FoundryAgentsExperiment.Agent\FoundryAgentsExperiment.Agent.csproj" />
+  </ItemGroup>
+
+</Project>

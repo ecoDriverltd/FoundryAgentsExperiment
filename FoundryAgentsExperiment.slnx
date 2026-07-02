@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="FoundryAgentsExperiment.Agent/FoundryAgentsExperiment.Agent.csproj" />
+  <Project Path="FoundryAgentsExperiment.AppHost/FoundryAgentsExperiment.AppHost.csproj" />
+  <Project Path="FoundryAgentsExperiment.ServiceDefaults/FoundryAgentsExperiment.ServiceDefaults.csproj" />
+</Solution>
