@@ -1,0 +1,44 @@
+@inject IJSRuntime JS
+
+<div class="message-list-container" @ref="_container">
+    <div class="message-list">
+        @foreach (var message in Messages.Where(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant))
+        {
+            <ChatMessageItem @key="@message" Message="@message" />
+        }
+
+        @if (InProgressMessage is not null)
+        {
+            <ChatMessageItem Message="@InProgressMessage" InProgress="true" />
+            <div class="typing-indicator">
+                <span></span><span></span><span></span>
+            </div>
+        }
+        else if (!Messages.Any(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant))
+        {
+            <div class="no-messages">
+                @NoMessagesContent
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private ElementReference _container;
+
+    [Parameter]
+    public required IEnumerable<ChatMessage> Messages { get; set; }
+
+    [Parameter]
+    public ChatMessage? InProgressMessage { get; set; }
+
+    [Parameter]
+    public RenderFragment? NoMessagesContent { get; set; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Scroll to bottom when new content arrives
+        await JS.InvokeVoidAsync("eval",
+            "document.querySelector('.message-list-container')?.scrollTo({top: 999999, behavior: 'smooth'})");
+    }
+}

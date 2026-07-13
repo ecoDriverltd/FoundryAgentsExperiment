@@ -1,0 +1,72 @@
+using FoundryAgentsExperiment.Web.Client.Services;
+using FoundryAgentsExperiment.Web.Components;
+using Microsoft.Agents.AI.AGUI;
+using Microsoft.Extensions.AI;
+using Yarp.ReverseProxy.Forwarder;
+using Yarp.ReverseProxy.Transforms;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddServiceDefaults();
+
+// Add services to the container.
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents()
+    .AddInteractiveWebAssemblyComponents();
+
+builder.Services.AddHttpForwarderWithServiceDiscovery();
+
+// Register WASM client services on the server so Blazor pre-render can inject them.
+// RendererInfo.IsInteractive guards prevent any browser-only (localStorage) calls during pre-render.
+builder.Services.AddHttpClient();
+builder.Services.AddScoped<IChatClient>(sp =>
+    new AGUIChatClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient(), "/ag-ui"));
+builder.Services.AddScoped<UserIdentityService>();
+builder.Services.AddScoped<ConversationStore>();
+builder.Services.AddScoped<AgentChatService>();
+
+var app = builder.Build();
+
+app.MapDefaultEndpoints();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseWebAssemblyDebugging();
+}
+else
+{
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
+    // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
+    app.UseHsts();
+}
+app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
+app.UseHttpsRedirection();
+
+app.UseAntiforgery();
+
+app.MapStaticAssets();
+app.MapRazorComponents<App>()
+    .AddInteractiveServerRenderMode()
+    .AddInteractiveWebAssemblyRenderMode()
+    .AddAdditionalAssemblies(typeof(FoundryAgentsExperiment.Web.Client._Imports).Assembly);
+
+var agentUrl = builder.Configuration["services:agent-dotnet:http:0"]
+    ?? throw new InvalidOperationException("Agent service URL not configured. Ensure WithReference(agent) is set in AppHost.");
+
+//Forward / ag-ui straight to the agent host — SSE streams through unbuffered
+app.MapForwarder("/ag-ui", agentUrl,
+    new ForwarderRequestConfig { ActivityTimeout = TimeSpan.FromMinutes(5) },
+    transformContext =>
+    {
+        // Inject user identity so the agent host knows who's calling
+        // In production, derive this from your auth claims
+        transformContext.AddRequestTransform(ctx =>
+        {
+            var userId = ctx.HttpContext.User?.Identity?.Name ?? "anonymous";
+            ctx.ProxyRequest.Headers.TryAddWithoutValidation("x-agent-user-id", userId);
+            return ValueTask.CompletedTask;
+        });
+    });
+
+app.Run();

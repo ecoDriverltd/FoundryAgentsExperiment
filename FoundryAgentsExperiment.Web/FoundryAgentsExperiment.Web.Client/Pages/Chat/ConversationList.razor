@@ -1,0 +1,59 @@
+@inject ConversationStore Store
+
+<div class="conversation-list">
+    <div class="conversation-list-header">Conversations</div>
+
+    @if (_conversations.Count == 0)
+    {
+        <div class="conversation-list-empty">No previous conversations</div>
+    }
+    else
+    {
+        @foreach (var conversation in _conversations)
+        {
+            var itemClass = conversation.Id == ActiveConversationId
+                ? "conversation-item active"
+                : "conversation-item";
+            <div class="@itemClass"
+                 @onclick="@(() => OnSelected.InvokeAsync(conversation))">
+                <div class="conversation-title">@conversation.Title</div>
+                <div class="conversation-date">@FormatDate(conversation.LastMessageAt)</div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private List<ConversationSummary> _conversations = [];
+
+    [Parameter]
+    public string? ActiveConversationId { get; set; }
+
+    [Parameter]
+    public EventCallback<ConversationSummary> OnSelected { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!RendererInfo.IsInteractive)
+            return;
+
+        await RefreshAsync();
+    }
+
+    public async Task RefreshAsync()
+    {
+        _conversations = await Store.GetAllAsync();
+        StateHasChanged();
+    }
+
+    private static string FormatDate(DateTimeOffset date)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var diff = now - date;
+        return diff.TotalMinutes < 1 ? "just now"
+            : diff.TotalHours < 1 ? $"{(int)diff.TotalMinutes}m ago"
+            : diff.TotalDays < 1 ? $"{(int)diff.TotalHours}h ago"
+            : diff.TotalDays < 7 ? $"{(int)diff.TotalDays}d ago"
+            : date.ToString("MMM d");
+    }
+}

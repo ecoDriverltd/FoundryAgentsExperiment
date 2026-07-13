@@ -9,13 +9,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.AgentFramework.DevUI" Version="1.12.0-preview.260629.1" />
+    <PackageReference Include="Aspire.Hosting.AgentFramework.DevUI" Version="1.13.0-preview.260703.1" />
     <PackageReference Include="Aspire.Hosting.Foundry" Version="13.4.6-preview.1.26319.6" />
-    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.12.0-preview.260629.1" />
+    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.13.0-preview.260703.1" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FoundryAgentsExperiment.Agent\FoundryAgentsExperiment.Agent.csproj" />
+    <ProjectReference Include="..\FoundryAgentsExperiment.Web\FoundryAgentsExperiment.Web\FoundryAgentsExperiment.Web.csproj" />
   </ItemGroup>
 
 </Project>

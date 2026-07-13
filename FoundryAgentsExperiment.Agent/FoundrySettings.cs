@@ -57,7 +57,16 @@ internal static class FoundryApplicationExtensions
             {
                 if (!context.Request.Headers.ContainsKey("x-agent-user-id"))
                     context.Request.Headers.Append("x-agent-user-id", "local-dev-user");
-                await next();
+
+                try
+                {
+                    await next();
+                }
+                catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+                {
+                    // Client disconnected mid-stream — not an error
+                    app.Logger.LogInformation("Request aborted by client: {Method} {Path}", context.Request.Method, context.Request.Path);
+                }
             });
 
         return app;

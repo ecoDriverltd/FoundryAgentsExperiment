@@ -1,5 +1,8 @@
 <Solution>
   <Project Path="FoundryAgentsExperiment.Agent/FoundryAgentsExperiment.Agent.csproj" />
   <Project Path="FoundryAgentsExperiment.AppHost/FoundryAgentsExperiment.AppHost.csproj" />
+  <Project Path="FoundryAgentsExperiment.IntegrationTests/FoundryAgentsExperiment.IntegrationTests.csproj" />
   <Project Path="FoundryAgentsExperiment.ServiceDefaults/FoundryAgentsExperiment.ServiceDefaults.csproj" />
+  <Project Path="FoundryAgentsExperiment.Web/FoundryAgentsExperiment.Web.Client/FoundryAgentsExperiment.Web.Client.csproj" />
+  <Project Path="FoundryAgentsExperiment.Web/FoundryAgentsExperiment.Web/FoundryAgentsExperiment.Web.csproj" />
 </Solution>
