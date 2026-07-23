@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FoundryAgentsExperiment.Agent\FoundryAgentsExperiment.Agent.csproj" />
+    <ProjectReference Include="..\FoundryAgentsExperiment.Console\FoundryAgentsExperiment.Console.csproj" />
     <ProjectReference Include="..\FoundryAgentsExperiment.Web\FoundryAgentsExperiment.Web\FoundryAgentsExperiment.Web.csproj" />
   </ItemGroup>
 

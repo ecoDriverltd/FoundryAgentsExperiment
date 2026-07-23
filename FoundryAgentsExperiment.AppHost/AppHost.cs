@@ -14,10 +14,16 @@ var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
     .WithHttpsEndpoint(targetPort: 9000)
     .WithHttpEndpoint(targetPort: 9001)
     .WithExternalHttpEndpoints()
+    .WithReference(foundry)
     .WithReference(project).WaitFor(project)
     .WithReference(chat).WaitFor(chat)
     .WithEnvironment("MODEL_DEPLOYMENT_NAME", FoundryModel.OpenAI.Gpt54Nano.Name)
-    .AsHostedAgent(project, configure => configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord("responses", "2.0.0")));
+    .AsHostedAgent(project,
+        configure =>
+        {
+            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Responses, "2.0.0"));
+            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
+        });
 
 var devui = builder.AddDevUI("devui")
     .WithAgentService(agent)
@@ -27,5 +33,9 @@ builder.AddProject<FoundryAgentsExperiment_Web>("foundryagentsexperiment-web")
     .WithReference(project)
     .WithReference(agent).WaitFor(agent)
     .WithExplicitStart();
+
+builder.AddProject<FoundryAgentsExperiment_Console>("console")
+    .WithReference(project)
+    .WithReference(agent).WaitFor(agent);
 
 builder.Build().Run();
