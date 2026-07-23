@@ -51,37 +51,19 @@ var openAIClient = projectClient.GetProjectOpenAIClient();
 //        .AsIEmbeddingGenerator()
 //});
 
-// Will this work with a fixed user/session for testing? As such, every chat should resume as if the same conversation?
-// How will a real thing work, accessing http context for user and session id?
-
 // NOTE: Microsoft.Agents.AI.Foundry.Hosting.InMemoryAgentSessionStore implements a DIFFERENT
 // AgentSessionStore contract (Foundry-specific, used by MapFoundryResponses/MapOpenAIConversations)
 // than the one MapAGUI resolves (Microsoft.Agents.AI.Hosting.AgentSessionStore). Registering that
 // type here was silently ignored by MapAGUI - use the AG-UI-compatible store instead.
 builder.Services.AddFoundryBackedAgentSessionStore(agentName);
 
-//var test2 = new FileSystemAgentSessionStore()
-
-//AIAgent agent = openAIClient
-//    .GetChatClient("gpt-5.4-nano")  //("chat-model") // What's 'GetChatClient' vs. 'GetResponsesClient'?
-//    .AsIChatClient()
-//    .AsAIAgent(new ChatClientAgentOptions
-//    {
-//        ChatOptions = new() { Instructions = "You are a helpful assistant." },
-//        Name = agentName
-
-//        // Do I need this or will it use memory for test purposes?
-//        //AIContextProviders = [
-//        //    new ChatHistoryMemoryProvider(
-//        //    vectorStore,
-//        //    collectionName: "chathistory",
-//        //    vectorDimensions: 3072,
-//        //    session => new ChatHistoryMemoryProvider.State(
-//        //        // Configure where messages are stored
-//        //        storageScope: new() { UserId = "user-123", SessionId = "fixed-session-id-1" },
-//        //        // Configure where to search (can be broader than storage scope)
-//        //        searchScope: new() { UserId = "user-123" }))]
-//    });
+// TODO: look at memory: https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/memory-usage?pivots=csharp
+//MemoryStore memoryStore = projectClient.MemoryStores.CreateMemoryStore(
+//    name: memoryStoreName,
+//    definition: memoryStoreDefinition,
+//    description: "Memory store for customer support agent"
+//);
+// Is it as a tool? As a context provider? Both?
 
 AIAgent agent = projectClient
     .AsAIAgent(new ChatClientAgentOptions
@@ -89,7 +71,6 @@ AIAgent agent = projectClient
         ChatOptions = new() { Instructions = "You are a helpful assistant.", ModelId = foundrySettings.DeploymentName },
         Name = agentName,
 
-        // Do I need this or will it use memory for test purposes?
         //AIContextProviders = [
         //    new ChatHistoryMemoryProvider(
         //    vectorStore,
@@ -109,6 +90,8 @@ AIAgent agent = projectClient
 // not both") if a ChatHistoryProvider is also explicitly configured. That exception previously
 // aborted every AG-UI streaming response mid-turn, which meant AgentSessionStore.SaveSessionAsync
 // was never reached - the session store stayed empty and each turn silently started a fresh session.
+// I suspect you could do something with 'mode 2' if you wanted your own ChatHistoryProvider
+// https://devblogs.microsoft.com/agent-framework/chat-history-storage-patterns-in-microsoft-agent-framework/#fixed-mode-providers
 builder.Services.AddKeyedSingleton(agentName, agent);
 
 builder.Services.AddFoundryResponses(agent);
@@ -117,22 +100,11 @@ builder.Services.AddFoundryToolboxes(foundrySettings.GetCredential(builder.Envir
 // This says for dev/test doing in memory, so I guess you need to register something more permanent for production.
 builder.Services.AddOpenAIConversations();
 
-//.AsAIAgent(
-//    model: foundrySettings.DeploymentName,
-//    name: agentName,
-//    instructions: """
-//        You are a helpful AI assistant hosted as a Foundry Hosted Agent.
-//        You can help with a wide range of tasks including answering questions,
-//        providing explanations, brainstorming ideas, and offering guidance.
-//        Be concise, clear, and helpful in your responses.
-//        """);
-
 var agentHost = builder.Build();
 
+// These two seem to let things work in DevUI
 agentHost.MapFoundryResponses("/v1");
 agentHost.MapOpenAIConversations();
-
-// The above now talks through 'devUI at least. Need to work out which client to use in my own .NET code.
 
 // Checkpoint 1: log the raw wire payload for every /ag-ui call BEFORE MapAGUI's handler runs,
 // so we can see exactly what ThreadId and message count the client actually sent, per turn.
@@ -152,6 +124,8 @@ agentHost.Use(async (context, next) =>
             var threadId = doc.RootElement.TryGetProperty("threadId", out var t) ? t.GetString() : "(none)";
             var messageCount = doc.RootElement.TryGetProperty("messages", out var m) ? m.GetArrayLength() : -1;
             log.LogInformation("[Wire] POST /ag-ui threadId={ThreadId} messageCount={MessageCount}", threadId, messageCount);
+
+            // TODO: check we get the user id as well? For memory.
         }
         catch (JsonException ex)
         {

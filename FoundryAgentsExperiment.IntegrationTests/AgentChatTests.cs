@@ -186,8 +186,10 @@ public class AgentChatTests : IAsyncLifetime
             }
         }
 
-        // This fails to continue the conversation at the moment, the thread id from the first doesn't seem to resume the second.
-        // Deliberatly using a new session with thread id so it's not using in memory chat history.
+        // This is now passing with the magical session store configuration.
         Assert.Contains("BLUE42", response2, StringComparison.OrdinalIgnoreCase);
+
+        // On to the next test, can it recall something with memory in a new conversation?
+
     }
 }
