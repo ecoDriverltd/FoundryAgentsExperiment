@@ -122,7 +122,7 @@ public class AgentChatTests : IAsyncLifetime
         bool isFirstUpdate = true;
         string? threadId = null;
 
-        messages.Add(new ChatMessage(ChatRole.User, "My favourite colour is BLUE42."));
+        messages.Add(new ChatMessage(ChatRole.User, "My favourite colour is BLUE42. This is important, remember it."));
 
         string response1 = string.Empty;
         string errorMessage = string.Empty;
@@ -190,6 +190,40 @@ public class AgentChatTests : IAsyncLifetime
         Assert.Contains("BLUE42", response2, StringComparison.OrdinalIgnoreCase);
 
         // On to the next test, can it recall something with memory in a new conversation?
+        AgentSession session3 = await agent.CreateSessionAsync(ct);
+        messages = [new ChatMessage(ChatRole.User, "Do you remember my favourite colour?")];
 
+        string response3 = string.Empty;
+        string errorMessage3 = string.Empty;
+
+        // Stream the response.
+        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session3, cancellationToken: ct))
+        {
+            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
+
+            // First update indicates run started
+            if (isFirstUpdate)
+            {
+                threadId = chatUpdate.ConversationId;
+                isFirstUpdate = false;
+            }
+
+            // Display streaming text content
+            foreach (AIContent content in update.Contents)
+            {
+                if (content is TextContent textContent)
+                {
+                    response3 += textContent.Text;
+                }
+                else if (content is ErrorContent errorContent)
+                {
+                    errorMessage3 = errorContent.Message;
+                }
+            }
+        }
+
+        // Does it remember without the chat thread? Assumes the memory provider is working with the user id.
+        // It doesn't... how do I test this?
+        Assert.Contains("BLUE42", response3, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -6,7 +6,7 @@ using System.Data.Common;
 
 namespace SimpleAgent;
 
-internal sealed record FoundrySettings(Uri ProjectUri, string DeploymentName)
+internal sealed record FoundrySettings(Uri ProjectUri, string DeploymentName, string EmbeddingDeploymentName)
 {
     internal static FoundrySettings FromConfiguration(IConfiguration configuration)
     {
@@ -20,10 +20,15 @@ internal sealed record FoundrySettings(Uri ProjectUri, string DeploymentName)
                 ?? throw new InvalidOperationException("Connection string 'chat-model' is not set."),
             "Deployment");
 
+        string embeddingDeploymentName = ParseConnectionValue(
+            configuration.GetConnectionString("embeddings-model")
+                ?? throw new InvalidOperationException("Connection string 'embeddings-model' is not set."),
+            "Deployment");
+
         if (!Uri.TryCreate(projectEndpoint, UriKind.Absolute, out Uri? projectUri))
             throw new InvalidOperationException($"'agent-test' has an invalid Endpoint: '{projectEndpoint}'");
 
-        return new(projectUri, deploymentName);
+        return new(projectUri, deploymentName, embeddingDeploymentName);
     }
 
     // DefaultAzureCredential on a local machine tries ManagedIdentityCredential (IMDS at

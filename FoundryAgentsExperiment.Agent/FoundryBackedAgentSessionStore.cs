@@ -26,10 +26,24 @@ public sealed class FoundryBackedAgentSessionStore(
     private const string UserIdHeaderName = "x-agent-user-id";
 
     public override ValueTask SaveSessionAsync(AIAgent agent, string conversationId, AgentSession session, CancellationToken cancellationToken = default)
-        => inner.SaveSessionAsync(agent, conversationId, session, this.GetUserId(), cancellationToken);
+        => inner.SaveSessionAsync(agent, conversationId, session, GetUserId(), cancellationToken);
 
     public override ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string conversationId, CancellationToken cancellationToken = default)
-        => inner.GetSessionAsync(agent, conversationId, this.GetUserId(), cancellationToken);
+        => inner.GetSessionAsync(agent, conversationId, GetUserId(), cancellationToken);
+
+    public override async ValueTask DeleteSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+
+        // Microsoft.Agents.AI.Foundry.Hosting.AgentSessionStore only exposes Save/GetSessionAsync -
+        // there is no delete/remove primitive, and FileSystemAgentSessionStore's session file path
+        // is a private implementation detail we can't reach from here. Emulate a delete by replacing
+        // the persisted state with a brand-new session: GetSessionAsync already treats a missing or
+        // empty session file as "no session", so overwriting with a freshly created one is
+        // functionally equivalent for every caller of the outer store.
+        AgentSession freshSession = await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
+        await inner.SaveSessionAsync(agent, sessionStoreId, freshSession, GetUserId(), cancellationToken).ConfigureAwait(false);
+    }
 
     private string? GetUserId()
         => httpContextAccessor.HttpContext?.Request.Headers[UserIdHeaderName].ToString() is { Length: > 0 } userId

@@ -4,7 +4,6 @@
   </Folder>
   <Project Path="FoundryAgentsExperiment.Agent/FoundryAgentsExperiment.Agent.csproj" />
   <Project Path="FoundryAgentsExperiment.AppHost/FoundryAgentsExperiment.AppHost.csproj" />
-  <Project Path="FoundryAgentsExperiment.Console/FoundryAgentsExperiment.Console.csproj" Id="11479441-8641-4042-b3f3-3d97b1df7f18" />
   <Project Path="FoundryAgentsExperiment.IntegrationTests/FoundryAgentsExperiment.IntegrationTests.csproj" />
   <Project Path="FoundryAgentsExperiment.ServiceDefaults/FoundryAgentsExperiment.ServiceDefaults.csproj" />
   <Project Path="FoundryAgentsExperiment.Web/FoundryAgentsExperiment.Web.Client/FoundryAgentsExperiment.Web.Client.csproj" />

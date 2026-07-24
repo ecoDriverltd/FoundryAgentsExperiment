@@ -9,9 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.AgentFramework.DevUI" Version="1.13.0-preview.260703.1" />
+    <PackageReference Include="Aspire.Hosting.AgentFramework.DevUI" Version="1.15.0-preview.260722.1" />
     <PackageReference Include="Aspire.Hosting.Foundry" Version="13.4.6-preview.1.26319.6" />
-    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.13.0-preview.260703.1" />
+    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.15.0-preview.260722.1" />
   </ItemGroup>
 
   <ItemGroup>
