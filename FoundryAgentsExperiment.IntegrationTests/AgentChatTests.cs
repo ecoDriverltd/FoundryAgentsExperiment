@@ -2,6 +2,8 @@ using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
 using Azure.AI.Projects;
+using Azure.Core;
+using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.AGUI;
 using Microsoft.Agents.AI.Workflows;
@@ -34,9 +36,21 @@ public class AgentChatTests : IAsyncLifetime
 
     public AgentChatTests(ITestOutputHelper output) => this.output = output;
 
+    private AIProjectClient? projectClient;
+
     public async ValueTask InitializeAsync()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+
+        // Prevent VS's debug-session Hot Reload/EnC support from leaking into the child
+        // resource processes (agent-dotnet, web) that the AppHost spawns. These env vars are
+        // inherited by every process the AppHost launches; if Visual Studio injected them for
+        // the test host (because it's running under the debugger), hitting a breakpoint stalls
+        // the shared Hot Reload IPC channel VS uses for all inherited child processes, which
+        // surfaces as spurious "hot reload" errors even with no code changes.
+        Environment.SetEnvironmentVariable("DOTNET_STARTUP_HOOKS", null);
+        Environment.SetEnvironmentVariable("DOTNET_MODIFIABLE_ASSEMBLIES", null);
+
         var appBuilder = await DistributedApplicationTestingBuilder
             .CreateAsync<Projects.FoundryAgentsExperiment_AppHost>(
                 args: [],
@@ -61,6 +75,7 @@ public class AgentChatTests : IAsyncLifetime
 
         this.app = await appBuilder.BuildAsync(cancellationToken).WaitAsync(DefaultTimeout, cancellationToken);
         await this.app.StartAsync(cancellationToken).WaitAsync(DefaultTimeout, cancellationToken);
+        await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-test", cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-dotnet", cancellationToken);
 
         // Stream the agent-dotnet resource's console logs (our [Wire]/[SessionStore] Checkpoint 1/2
@@ -106,11 +121,28 @@ public class AgentChatTests : IAsyncLifetime
             .AsAIAgent(name: "agui-client", description: "AG-UI Client Agent");
     }
 
+    private async Task<AIProjectClient> CreateProjectClientAsync()
+    {
+        var endPoint = await app!.GetConnectionStringAsync("agent-test") ?? throw new InvalidOperationException("No connection string to foundry");
+        var endPointUri = new Uri(endPoint.Replace("Endpoint=", ""));
+        this.projectClient = new AIProjectClient(endPointUri, GetCredential());
+
+        return this.projectClient;
+    }
+
+    internal static TokenCredential GetCredential() =>
+             new ChainedTokenCredential(
+                new VisualStudioCredential(),
+                new VisualStudioCodeCredential(),
+                new DefaultAzureCredential());
+
     [Fact]
     public async Task AGUIAgentRecallsFact1()
     {
         var ct = TestContext.Current.CancellationToken;
-        var agent = CreateAGUIAgent("test-" + Guid.NewGuid().ToString("N"));
+        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var agent = CreateAGUIAgent(userId);
+        var projectClient = await CreateProjectClientAsync();
 
         AgentSession session = await agent.CreateSessionAsync(ct);
 
@@ -190,6 +222,32 @@ public class AgentChatTests : IAsyncLifetime
         Assert.Contains("BLUE42", response2, StringComparison.OrdinalIgnoreCase);
 
         // On to the next test, can it recall something with memory in a new conversation?
+        // Need to wait for the memory to land (not sure how long that might take?)        
+        bool foundMemory = false;
+        int retryCount = 0;
+        int retryLimit = 5;
+        int retryDelayMs = 1000;
+
+        while (foundMemory == false && retryCount < retryLimit)
+        {
+            var memories = await projectClient.MemoryStores.GetMemoriesAsync("agent-dotnet-memory", userId, cancellationToken: ct)
+                .ToListAsync(cancellationToken: ct);
+
+            if (memories.Count != 0)
+            {
+                foundMemory = true;
+                var relevantMemory = memories.FirstOrDefault(m => m.Content.Contains("BLUE42", StringComparison.OrdinalIgnoreCase));
+                Assert.True(relevantMemory != null);
+                output.WriteLine($"Found relevant memory: {relevantMemory.Content}");
+                break;
+            }
+
+            await Task.Delay(retryDelayMs, ct);
+            retryCount++;
+        }
+
+        Assert.True(foundMemory, "Memory not found in memory store after retries.");
+
         AgentSession session3 = await agent.CreateSessionAsync(ct);
         messages = [new ChatMessage(ChatRole.User, "Do you remember my favourite colour?")];
 
@@ -223,7 +281,6 @@ public class AgentChatTests : IAsyncLifetime
         }
 
         // Does it remember without the chat thread? Assumes the memory provider is working with the user id.
-        // It doesn't... how do I test this?
         Assert.Contains("BLUE42", response3, StringComparison.OrdinalIgnoreCase);
     }
 }

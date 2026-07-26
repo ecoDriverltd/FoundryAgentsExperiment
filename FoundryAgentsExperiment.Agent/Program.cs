@@ -63,11 +63,29 @@ builder.Services.AddFoundryBackedAgentSessionStore(agentName);
 // FoundryBackedAgentSessionStore (not the unrelated x-memory-user-id header used by the hosted
 // memory-search *tool* on versioned Foundry agents).
 
+//var memoryAsTool = new MemorySearchPreviewTool()
+
+// FoundryMemoryProvider is constructed before builder.Build(), so DI's ILoggerFactory isn't
+// available yet. Without an explicit loggerFactory, every internal LogInformation/LogError call
+// (including the catch block around the memory-update request) is a silent no-op, which made
+// write failures invisible. Give it a standalone console logger so we can actually see what's
+// happening.
+using var memoryProviderLoggerFactory = LoggerFactory.Create(logging =>
+{
+    logging.AddConsole();
+    logging.SetMinimumLevel(LogLevel.Trace);
+});
+
 var memoryProvider = new FoundryMemoryProvider(
     projectClient,
+    options: new FoundryMemoryProviderOptions
+    {
+        EnableSensitiveTelemetryData = true
+    },
     memoryStoreName: $"{agentName}-memory",
     stateInitializer: _ => new FoundryMemoryProvider.State(
-        new FoundryMemoryProviderScope(GetAgentUserId(httpContextAccessor))));
+        new FoundryMemoryProviderScope(GetAgentUserId(httpContextAccessor))),
+    loggerFactory: memoryProviderLoggerFactory);
 
 await memoryProvider.EnsureMemoryStoreCreatedAsync(
     chatModel: foundrySettings.DeploymentName,
@@ -81,7 +99,7 @@ AIAgent agent = projectClient
         {
             Instructions = "You are a helpful assistant.",
             ModelId = foundrySettings.DeploymentName,
-            Tools = []
+            //Tools = []
         },
         Name = agentName,
         AIContextProviders = [memoryProvider],
@@ -153,6 +171,13 @@ await agentHost.RunAsync();
 // injects x-agent-user-id on every inbound request (see FoundrySettings.UseFoundryLocalUserIdFallback
 // for the local-dev fallback).
 static string GetAgentUserId(IHttpContextAccessor httpContextAccessor)
-    => httpContextAccessor.HttpContext?.Request.Headers["x-agent-user-id"].ToString() is { Length: > 0 } userId
-        ? userId
-        : "anonymous";
+{
+    string? userId = httpContextAccessor.HttpContext?.Request.Headers["x-agent-user-id"].ToString();
+
+    if (string.IsNullOrEmpty(userId))
+    {
+        return "annonymous"; // Fallback for local dev if Foundry doesn't inject the header
+    }
+
+    return userId;
+}
