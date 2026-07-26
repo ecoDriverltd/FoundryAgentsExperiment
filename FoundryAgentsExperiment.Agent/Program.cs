@@ -1,17 +1,24 @@
 ﻿using Azure.AI.Projects;
+using Azure.AI.Projects.Agents;
+using Azure.Core;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Foundry;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Extensions.AI;
+using ModelContextProtocol.Client;
 using SimpleAgent;
+using System.Net.Http.Headers;
 using System.Text.Json;
+
+#pragma warning disable AAIP001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
 var port = Environment.GetEnvironmentVariable("DEFAULT_AD_PORT") ?? "8088";
 
 var builder = WebApplication.CreateBuilder(args);
 
 var foundrySettings = FoundrySettings.FromConfiguration(builder.Configuration);
+TokenCredential credential = foundrySettings.GetCredential(builder.Environment);
 //AgentHostBuilder builder = AgentHost.CreateBuilder(args);
 
 if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS"))
@@ -42,7 +49,7 @@ Console.WriteLine($"Project Endpoint: {foundrySettings.ProjectUri}");
 Console.WriteLine($"Model Deployment: {foundrySettings.DeploymentName}");
 
 string agentName = "agent-dotnet";
-var projectClient = new AIProjectClient(foundrySettings.ProjectUri, foundrySettings.GetCredential(builder.Environment));
+var projectClient = new AIProjectClient(foundrySettings.ProjectUri, credential);
 var openAIClient = projectClient.GetProjectOpenAIClient();
 
 // Shared instance so both the memory provider (constructed before the host is built) and
@@ -62,14 +69,6 @@ builder.Services.AddFoundryBackedAgentSessionStore(agentName);
 // Memories are scoped per caller using the same x-agent-user-id header convention as
 // FoundryBackedAgentSessionStore (not the unrelated x-memory-user-id header used by the hosted
 // memory-search *tool* on versioned Foundry agents).
-
-//var memoryAsTool = new MemorySearchPreviewTool()
-
-// FoundryMemoryProvider is constructed before builder.Build(), so DI's ILoggerFactory isn't
-// available yet. Without an explicit loggerFactory, every internal LogInformation/LogError call
-// (including the catch block around the memory-update request) is a silent no-op, which made
-// write failures invisible. Give it a standalone console logger so we can actually see what's
-// happening.
 using var memoryProviderLoggerFactory = LoggerFactory.Create(logging =>
 {
     logging.AddConsole();
@@ -92,6 +91,61 @@ await memoryProvider.EnsureMemoryStoreCreatedAsync(
     embeddingModel: foundrySettings.EmbeddingDeploymentName,
     description: $"Memory store for {agentName}");
 
+// Toolbox/Skills
+// Can create/manage skills via a client, they can then be discovered by the agent via MCP
+string toolboxName = "my-toolbox";
+AgentAdministrationClient agentAdminClient = projectClient.AgentAdministrationClient;
+AgentToolboxes toolboxClient = agentAdminClient.GetAgentToolboxes();
+ProjectAgentSkills skillsClient = agentAdminClient.GetAgentSkills();
+
+SkillVersion created = await skillsClient.CreateSkillVersionAsync("silly-math", inlineContent:
+    new SkillInlineContent("A silly math skill for handling all mathmatical operations in a daft way",
+        "Whenever a mathmatical calculation needs to be evaluated, just return '42' as the answer. So if the user asks for 1 + 1, return '42'."));
+
+ToolboxSkillReference skillRef = new("silly-math");  // exiting skill, add { Version = "v1" } to pin
+
+ToolboxVersion toolboxVersion = await toolboxClient.CreateVersionAsync(
+    name: toolboxName,
+    tools: [],
+    skills: [skillRef],
+    description: "Toolbox with a skill reference");
+
+// HttpClient that attaches a fresh Foundry bearer token to every request.
+// CheckCertificateRevocationList = true satisfies CA5399.
+using var httpClient = new HttpClient(
+    new BearerTokenHandler(credential, "https://ai.azure.com/.default")
+    {
+        CheckCertificateRevocationList = true,
+    });
+
+string toolboxMcpServerUrl = $"{foundrySettings.ProjectUri.ToString().TrimEnd('/')}/toolboxes/{toolboxName}/mcp?api-version=v1";
+
+await using var mcpClient = await McpClient.CreateAsync(
+    new HttpClientTransport(
+        new HttpClientTransportOptions
+        {
+            Endpoint = new Uri(toolboxMcpServerUrl),
+            Name = toolboxName,
+            TransportMode = HttpTransportMode.StreamableHttp,
+        },
+        httpClient));
+
+// DisableLoadSkillApproval/DisableReadSkillResourceApproval/DisableRunSkillScriptApproval: without
+// these, load_skill (and friends) are human-in-the-loop tools that raise a FunctionApprovalRequest
+// which nobody ever answers over AG-UI/streaming, so the turn just stalls with a pending
+// FunctionCallContent and never produces a response.
+var skillsProvider = new AgentSkillsProviderBuilder()
+    .UseMcpSkills(mcpClient)
+    .UseOptions(options =>
+    {
+        options.DisableLoadSkillApproval = true;
+        options.DisableReadSkillResourceApproval = true;
+        options.DisableRunSkillScriptApproval = true;
+    })
+    .Build();
+
+// Agent itself.
+
 AIAgent agent = projectClient
     .AsAIAgent(new ChatClientAgentOptions
     {
@@ -102,7 +156,10 @@ AIAgent agent = projectClient
             //Tools = []
         },
         Name = agentName,
-        AIContextProviders = [memoryProvider],
+        AIContextProviders = [
+            memoryProvider,
+            skillsProvider
+        ],
     });
 
 // NOTE: agent is shared by both /v1 (AddFoundryResponses) and /ag-ui (MapAGUI via this keyed
@@ -119,7 +176,8 @@ builder.Services.AddKeyedSingleton(agentName, agent);
 builder.Services.AddFoundryResponses(agent);
 builder.Services.AddFoundryToolboxes(foundrySettings.GetCredential(builder.Environment));
 
-// This says for dev/test doing in memory, so I guess you need to register something more permanent for production.
+// This adds OpenAI Conversations endpoints, but I guess with the combination of FoundryResponses and AG-UI,
+// Isn't using this? The conversation id comes from the first response.
 builder.Services.AddOpenAIConversations();
 
 var agentHost = builder.Build();
@@ -180,4 +238,52 @@ static string GetAgentUserId(IHttpContextAccessor httpContextAccessor)
     }
 
     return userId;
+}
+
+// HttpClientHandler that attaches a Foundry bearer token to every outgoing request, caching it
+// until shortly before it expires. Without caching, every single MCP request (skill/tool listing,
+// tool invocation, etc.) re-triggers a fresh credential.GetTokenAsync call. VisualStudioCredential
+// in particular doesn't cache internally - it shells out to the VS auth broker each time - so
+// re-fetching per request is slow and can lead to timeouts/cancellation mid-stream.
+internal sealed class BearerTokenHandler(TokenCredential credential, string scope) : HttpClientHandler
+{
+    private static readonly TimeSpan RefreshBuffer = TimeSpan.FromMinutes(2);
+
+    private readonly TokenRequestContext _tokenContext = new([scope]);
+    private readonly SemaphoreSlim _tokenLock = new(1, 1);
+    private AccessToken? _cachedToken;
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        AccessToken token = await GetCachedTokenAsync(cancellationToken).ConfigureAwait(false);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+        return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<AccessToken> GetCachedTokenAsync(CancellationToken cancellationToken)
+    {
+        AccessToken? cached = this._cachedToken;
+        if (cached is { } token && token.ExpiresOn - RefreshBuffer > DateTimeOffset.UtcNow)
+        {
+            return token;
+        }
+
+        await this._tokenLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cached = this._cachedToken;
+            if (cached is { } lockedToken && lockedToken.ExpiresOn - RefreshBuffer > DateTimeOffset.UtcNow)
+            {
+                return lockedToken;
+            }
+
+            AccessToken freshToken = await credential.GetTokenAsync(this._tokenContext, cancellationToken).ConfigureAwait(false);
+            this._cachedToken = freshToken;
+            return freshToken;
+        }
+        finally
+        {
+            this._tokenLock.Release();
+        }
+    }
 }

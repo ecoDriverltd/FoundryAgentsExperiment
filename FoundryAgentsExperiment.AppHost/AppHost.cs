@@ -1,4 +1,3 @@
-using Aspire.Hosting.Azure;
 using Aspire.Hosting.Foundry;
 using Azure.AI.Projects.Agents;
 using Azure.Provisioning.Authorization;
