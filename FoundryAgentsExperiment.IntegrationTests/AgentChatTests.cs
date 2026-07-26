@@ -283,4 +283,56 @@ public class AgentChatTests : IAsyncLifetime
         // Does it remember without the chat thread? Assumes the memory provider is working with the user id.
         Assert.Contains("BLUE42", response3, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task AGUIAgentCanUseSkill()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var agent = CreateAGUIAgent(userId);
+        var projectClient = await CreateProjectClientAsync();
+
+        AgentSession session = await agent.CreateSessionAsync(ct);
+
+        List<ChatMessage> messages =
+        [
+            new(ChatRole.System, "You are a helpful assistant.")
+        ];
+
+        bool isFirstUpdate = true;
+        string? threadId = null;
+
+        messages.Add(new ChatMessage(ChatRole.User, "Use your silly-math skill to calculate 6 * 7."));
+
+        string response1 = string.Empty;
+        string errorMessage = string.Empty;
+
+        // Stream the response.
+        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, cancellationToken: ct))
+        {
+            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
+
+            // First update indicates run started
+            if (isFirstUpdate)
+            {
+                threadId = chatUpdate.ConversationId;
+                isFirstUpdate = false;
+            }
+
+            // Display streaming text content
+            foreach (AIContent content in update.Contents)
+            {
+                if (content is TextContent textContent)
+                {
+                    response1 += textContent.Text;
+                }
+                else if (content is ErrorContent errorContent)
+                {
+                    errorMessage = errorContent.Message;
+                }
+            }
+        }
+
+        Assert.Contains("42", response1, StringComparison.OrdinalIgnoreCase);
+    }
 }
