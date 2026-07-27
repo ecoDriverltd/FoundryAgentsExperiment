@@ -2,8 +2,10 @@
 @page "/chat/{ConversationId}"
 @rendermode InteractiveWebAssembly
 @using Microsoft.Agents.AI
+@using Microsoft.Agents.AI.AGUI
 @using Microsoft.Extensions.AI
-@inject AgentChatService AgentChatService
+@inject AGUIChatClient ChatClient
+@inject GeolocationService Geolocation
 @inject ConversationStore ConversationStore
 @inject UserIdentityService UserIdentity
 @inject NavigationManager Nav
@@ -24,12 +26,7 @@
 
         <ChatMessageList Messages="@_displayMessages" InProgressMessage="@_inProgressMessage">
             <NoMessagesContent>
-                <p>Start a conversation. Try asking something like:</p>
-                <ul>
-                    <li>"Summarise the key figures in this report"</li>
-                    <li>"What's driving the cost reduction?"</li>
-                    <li>"How does revenue compare to last quarter?"</li>
-                </ul>
+                <p>Start a conversation.</p>
             </NoMessagesContent>
         </ChatMessageList>
 
@@ -45,8 +42,8 @@
 
     private string _conversationId = Guid.NewGuid().ToString(); // localStorage key + URL param
     private string? _threadId;                                   // server-assigned Foundry thread ID
+    private ChatClientAgent? _agent;                              // built per page instance with frontend tools
     private AgentSession? _session;                               // AG-UI session bound to _threadId
-    private string _userId = "unknown";
     private bool _isFirstMessage = true;
     private bool _isStreaming;
     private bool _focusInput;
@@ -64,7 +61,17 @@
         if (!RendererInfo.IsInteractive)
             return;
 
-        _userId = await UserIdentity.GetUserIdAsync();
+        // Frontend tools are registered when the ChatClientAgent is built, so the agent (and its
+        // tool list) must be constructed here rather than in DI: the geolocation tool closes over
+        // this page's scoped GeolocationService (which wraps IJSRuntime, itself scoped/circuit-bound).
+        AITool[] frontendTools =
+        [
+            AIFunctionFactory.Create(Geolocation.GetUserLocationAsync,
+                name: "get_user_location",
+                description: "Get the user's current location from the browser's GPS.")
+        ];
+
+        _agent = ChatClient.AsAIAgent(name: "agui-client", description: "AG-UI Client Agent", tools: frontendTools);
 
         if (ConversationId is { Length: > 0 })
         {
@@ -124,10 +131,8 @@
 
         // Fresh system prompt injected every turn; Foundry maintains history server-side.
         var systemPrompt = $"""
-            You are helping user {_userId}.
-            They are currently viewing: Fake Report Q2-2026.
-            Key data: Revenue £2.4m (+12% YoY), Costs £1.8m (-3% YoY), Net margin 25%.
-            Use this context to inform your responses when relevant.
+            You are providing general assistance to a user planning their day.
+            If the user asks for their location or where they are or similar, call the get_user_location tool to retrieve it.
             """;
 
         var responseText = new TextContent(string.Empty);
@@ -144,26 +149,52 @@
         {
             // Reuse the session across turns of the same conversation; create it (resuming the
             // stored thread id, if any) the first time this page instance sends a message.
-            _session ??= await AgentChatService.CreateSessionAsync(_threadId, _streamingCts.Token);
+            _session ??= _threadId is { Length: > 0 }
+                ? await _agent!.CreateSessionAsync(_threadId, _streamingCts.Token)
+                : await _agent!.CreateSessionAsync(_streamingCts.Token);
 
-            await foreach (var chunk in AgentChatService.StreamAsync(
-                _session, systemPrompt, userText,
-                onThreadIdAssigned: async id =>
-                {
-                    _threadId = id;
-                    // Persist the server thread ID so resume can pass it back to Foundry
-                    var all = await ConversationStore.GetAllAsync();
-                    var existing = all.FirstOrDefault(c => c.Id == _conversationId);
-                    if (existing is not null)
-                    {
-                        existing.ThreadId = id;
-                        await ConversationStore.SaveAsync(existing);
-                    }
-                },
-                _streamingCts.Token))
+            List<ChatMessage> messages =
+            [
+                new(ChatRole.System, systemPrompt),
+                new(ChatRole.User, userText)
+            ];
+
+            await foreach (var update in _agent!.RunStreamingAsync(messages, _session, cancellationToken: _streamingCts.Token))
             {
-                responseText.Text += chunk;
-                ChatMessageItem.NotifyChanged(_inProgressMessage);
+                if (_threadId is null or { Length: 0 })
+                {
+                    var conversationId = update.AsChatResponseUpdate().ConversationId;
+                    if (conversationId is { Length: > 0 })
+                    {
+                        _threadId = conversationId;
+                        // Persist the server thread ID so resume can pass it back to Foundry
+                        var all = await ConversationStore.GetAllAsync();
+                        var existing = all.FirstOrDefault(c => c.Id == _conversationId);
+                        if (existing is not null)
+                        {
+                            existing.ThreadId = conversationId;
+                            await ConversationStore.SaveAsync(existing);
+                        }
+                    }
+                }
+
+                foreach (var content in update.Contents)
+                {
+                    switch (content)
+                    {
+                        case TextContent text:
+                            responseText.Text += text.Text;
+                            ChatMessageItem.NotifyChanged(_inProgressMessage);
+                            break;
+                        case FunctionCallContent call:
+                            _displayMessages.Add(new ChatMessage(ChatRole.Tool, $"🔧 Calling {call.Name}…"));
+                            break;
+                        case FunctionResultContent result:
+                            _displayMessages.Add(new ChatMessage(ChatRole.Tool, $"✅ {result.Result}"));
+                            break;
+                    }
+                }
+
                 await InvokeAsync(StateHasChanged);
             }
         }

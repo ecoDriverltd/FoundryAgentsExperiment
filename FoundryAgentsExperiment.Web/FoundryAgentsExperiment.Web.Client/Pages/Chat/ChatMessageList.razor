@@ -2,7 +2,7 @@
 
 <div class="message-list-container" @ref="_container">
     <div class="message-list">
-        @foreach (var message in Messages.Where(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant))
+        @foreach (var message in Messages.Where(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant || m.Role == ChatRole.Tool))
         {
             <ChatMessageItem @key="@message" Message="@message" />
         }
@@ -14,7 +14,7 @@
                 <span></span><span></span><span></span>
             </div>
         }
-        else if (!Messages.Any(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant))
+        else if (!Messages.Any(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant || m.Role == ChatRole.Tool))
         {
             <div class="no-messages">
                 @NoMessagesContent

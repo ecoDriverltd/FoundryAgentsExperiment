@@ -1,8 +1,6 @@
 using FoundryAgentsExperiment.Web.Client.Services;
 using FoundryAgentsExperiment.Web.Components;
-using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.AGUI;
-using Microsoft.Extensions.AI;
 using Yarp.ReverseProxy.Forwarder;
 using Yarp.ReverseProxy.Transforms;
 
@@ -19,13 +17,13 @@ builder.Services.AddHttpForwarderWithServiceDiscovery();
 
 // Register WASM client services on the server so Blazor pre-render can inject them.
 // RendererInfo.IsInteractive guards prevent any browser-only (localStorage) calls during pre-render.
-builder.Services.AddHttpClient();
-builder.Services.AddScoped<ChatClientAgent>(sp =>
-    new AGUIChatClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient(), "/ag-ui")
-        .AsAIAgent(name: "agui-client", description: "AG-UI Client Agent"));
+// ChatClientAgent is built per chat-page instance (not here) so it can be given frontend tools
+// that close over page-scoped, JS-interop-backed services like GeolocationService.
+builder.Services.AddHttpClient<AGUIChatClient>()
+    .AddTypedClient<AGUIChatClient>((http, _) => new AGUIChatClient(http, "/ag-ui"));
 builder.Services.AddScoped<UserIdentityService>();
+builder.Services.AddScoped<GeolocationService>();
 builder.Services.AddScoped<ConversationStore>();
-builder.Services.AddScoped<AgentChatService>();
 
 var app = builder.Build();
 

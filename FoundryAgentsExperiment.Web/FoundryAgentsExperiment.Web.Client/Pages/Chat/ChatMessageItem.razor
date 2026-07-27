@@ -20,6 +20,12 @@ else if (Message.Role == ChatRole.Assistant)
         </div>
     </div>
 }
+else if (Message.Role == ChatRole.Tool)
+{
+    <div class="tool-message">
+        @Message.Text
+    </div>
+}
 
 @code {
     private static readonly ConditionalWeakTable<ChatMessage, ChatMessageItem> SubscribersLookup = new();

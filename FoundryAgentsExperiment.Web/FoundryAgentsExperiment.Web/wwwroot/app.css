@@ -254,6 +254,21 @@ h1:focus {
     font-size: 0.875em;
 }
 
+/* Tool call/result bubble */
+.tool-message {
+    align-self: flex-start;
+    background: #fff3cd;
+    color: #664d03;
+    border: 1px solid #ffe69c;
+    padding: 0.4rem 0.8rem;
+    border-radius: 12px;
+    max-width: 80%;
+    font-size: 0.85rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* Typing indicator */
 .typing-indicator {
     display: flex;
