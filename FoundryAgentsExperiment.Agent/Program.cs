@@ -52,6 +52,10 @@ string agentName = "agent-dotnet";
 var projectClient = new AIProjectClient(foundrySettings.ProjectUri, credential);
 var openAIClient = projectClient.GetProjectOpenAIClient();
 
+// Think this is querying all conversations, not user specific?
+//var conversationClient = openAIClient.GetProjectConversationsClient();
+//conversationClient.GetProjectConversationsAsync()
+
 // Shared instance so both the memory provider (constructed before the host is built) and
 // FoundryBackedAgentSessionStore (resolved from DI at request time) see the same request context.
 var httpContextAccessor = new HttpContextAccessor();
@@ -178,7 +182,9 @@ builder.Services.AddFoundryToolboxes(foundrySettings.GetCredential(builder.Envir
 
 // This adds OpenAI Conversations endpoints, but I guess with the combination of FoundryResponses and AG-UI,
 // Isn't using this? The conversation id comes from the first response.
-builder.Services.AddOpenAIConversations();
+
+// TODO: test the theory
+builder.Services.AddOpenAIConversations(); // Maybe I don't need this with foundry responses? Perhaps just need to map?
 
 var agentHost = builder.Build();
 
