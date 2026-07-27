@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <RootNamespace>SimpleAgent</RootNamespace>
-    <AssemblyName>simple-agent</AssemblyName>
+    <RootNamespace>FoundryAgentsExperiment.Agent</RootNamespace>
+    <AssemblyName>agent</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <NoWarn>$(NoWarn);NU1903</NoWarn>

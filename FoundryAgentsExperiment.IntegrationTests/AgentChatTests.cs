@@ -24,18 +24,15 @@ namespace FoundryAgentsExperiment.IntegrationTests;
 ///   - A unique user ID per test isolates Foundry threads between runs.
 /// </summary>
 [Trait("Category", "Integration")]
-public class AgentChatTests : IAsyncLifetime
+public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 {
     private DistributedApplication? app;
 
-    private readonly ITestOutputHelper output;
+    private readonly ITestOutputHelper output = output;
 
     private CancellationTokenSource? resourceLogCts;
 
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
-
-    public AgentChatTests(ITestOutputHelper output) => this.output = output;
-
     private AIProjectClient? projectClient;
 
     public async ValueTask InitializeAsync()
@@ -70,7 +67,18 @@ public class AgentChatTests : IAsyncLifetime
 
         appBuilder.Services.ConfigureHttpClientDefaults(clientBuilder =>
         {
-            clientBuilder.AddStandardResilienceHandler();
+            // Standard resilience defaults (10s per attempt / 30s total) are far too aggressive for
+            // this test suite's HTTP clients: agentic turns stream LLM completions and MCP tool/skill
+            // calls (which themselves acquire tokens via VisualStudioCredential/DefaultAzureCredential)
+            // that routinely take longer than that, even with no debugger attached. Give them enough
+            // budget to complete rather than cascading a client-side timeout into a server-side
+            // RequestAborted cancellation (surfacing as TaskCanceledException deep in the agent).
+            clientBuilder.AddStandardResilienceHandler(options =>
+            {
+                options.AttemptTimeout.Timeout = TimeSpan.FromMinutes(2);
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(5);
+                options.CircuitBreaker.SamplingDuration = options.AttemptTimeout.Timeout * 2;
+            });
         });
 
         this.app = await appBuilder.BuildAsync(cancellationToken).WaitAsync(DefaultTimeout, cancellationToken);

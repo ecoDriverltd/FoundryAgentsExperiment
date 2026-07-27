@@ -1,4 +1,5 @@
-﻿using Microsoft.Agents.AI;
+﻿using FoundryAgentsExperiment.Agent;
+using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 

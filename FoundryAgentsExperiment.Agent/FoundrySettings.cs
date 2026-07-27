@@ -4,11 +4,11 @@ using Azure.Core;
 using Azure.Identity;
 using System.Data.Common;
 
-namespace SimpleAgent;
+namespace FoundryAgentsExperiment.Agent;
 
-internal sealed record FoundrySettings(Uri ProjectUri, string DeploymentName, string EmbeddingDeploymentName)
+public sealed record FoundrySettings(Uri ProjectUri, string DeploymentName, string EmbeddingDeploymentName)
 {
-    internal static FoundrySettings FromConfiguration(IConfiguration configuration)
+    public static FoundrySettings FromConfiguration(IConfiguration configuration)
     {
         string projectEndpoint = ParseConnectionValue(
             configuration.GetConnectionString("agent-test")
@@ -33,7 +33,7 @@ internal sealed record FoundrySettings(Uri ProjectUri, string DeploymentName, st
 
     // DefaultAzureCredential on a local machine tries ManagedIdentityCredential (IMDS at
     // 169.254.169.254) which can block for the full HttpClient.Timeout. Use a fast chain locally.
-    internal TokenCredential GetCredential(IHostEnvironment environment) =>
+    public static TokenCredential GetCredential(IHostEnvironment environment) =>
         environment.IsDevelopment()
             ? new ChainedTokenCredential(
                 new VisualStudioCredential(),
