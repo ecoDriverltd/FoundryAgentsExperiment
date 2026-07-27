@@ -1,5 +1,6 @@
 using FoundryAgentsExperiment.Web.Client.Services;
 using FoundryAgentsExperiment.Web.Components;
+using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.AGUI;
 using Microsoft.Extensions.AI;
 using Yarp.ReverseProxy.Forwarder;
@@ -19,8 +20,9 @@ builder.Services.AddHttpForwarderWithServiceDiscovery();
 // Register WASM client services on the server so Blazor pre-render can inject them.
 // RendererInfo.IsInteractive guards prevent any browser-only (localStorage) calls during pre-render.
 builder.Services.AddHttpClient();
-builder.Services.AddScoped<IChatClient>(sp =>
-    new AGUIChatClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient(), "/ag-ui"));
+builder.Services.AddScoped<ChatClientAgent>(sp =>
+    new AGUIChatClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient(), "/ag-ui")
+        .AsAIAgent(name: "agui-client", description: "AG-UI Client Agent"));
 builder.Services.AddScoped<UserIdentityService>();
 builder.Services.AddScoped<ConversationStore>();
 builder.Services.AddScoped<AgentChatService>();
@@ -51,7 +53,7 @@ app.MapRazorComponents<App>()
     .AddInteractiveWebAssemblyRenderMode()
     .AddAdditionalAssemblies(typeof(FoundryAgentsExperiment.Web.Client._Imports).Assembly);
 
-var agentUrl = builder.Configuration["services:agent-dotnet:http:0"]
+var agentUrl = builder.Configuration["services:agent-dotnet:https:0"]
     ?? throw new InvalidOperationException("Agent service URL not configured. Ensure WithReference(agent) is set in AppHost.");
 
 //Forward / ag-ui straight to the agent host — SSE streams through unbuffered
@@ -63,6 +65,10 @@ app.MapForwarder("/ag-ui", agentUrl,
         // In production, derive this from your auth claims
         transformContext.AddRequestTransform(ctx =>
         {
+            // Client shouldn't sent this header, this is a back/end server concern.
+            // The user id can then come from cookie auth/back end.
+            ctx.ProxyRequest.Headers.Remove("x-agent-user-id");
+
             var userId = ctx.HttpContext.User?.Identity?.Name ?? "anonymous";
             ctx.ProxyRequest.Headers.TryAddWithoutValidation("x-agent-user-id", userId);
             return ValueTask.CompletedTask;

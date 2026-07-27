@@ -5,6 +5,7 @@ using FoundryAgentsExperiment.Agent.AgentExtensions;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using SimpleAgent;
 using System.Text.Json;
@@ -41,7 +42,7 @@ builder.Services.AddCors(options =>
 Console.WriteLine($"Project Endpoint: {foundrySettings.ProjectUri}");
 Console.WriteLine($"Model Deployment: {foundrySettings.DeploymentName}");
 
-string agentName = "agent-dotnet";
+const string agentName = "agent-dotnet";
 var projectClient = new AIProjectClient(foundrySettings.ProjectUri, credential);
 var openAIClient = projectClient.GetProjectOpenAIClient();
 
@@ -54,6 +55,10 @@ builder.Services.AddSingleton<IHttpContextAccessor>(httpContextAccessor);
 // AgentSessionStore contract (Foundry-specific, used by MapFoundryResponses/MapOpenAIConversations)
 // than the one MapAGUI resolves (Microsoft.Agents.AI.Hosting.AgentSessionStore). Registering that
 // type here was silently ignored by MapAGUI - use the AG-UI-compatible store instead.
+
+// When running locally, this agent is putting sessionn serialized onto disk. From code comments
+// it seems that this is complementary to foundry's own session store, which I'm assuming will 
+// only populate when this is published to foundry.
 builder.Services.AddFoundryBackedAgentSessionStore(agentName);
 
 // Foundry-managed memory: FoundryMemoryProvider is an AIContextProvider, so it plugs straight into
@@ -69,7 +74,6 @@ var memoryProvider = await projectClient.GetFoundryMemoryProviderAsync(agentName
 // BearerTokenHandler), so it's registered with DI for shutdown-time disposal instead of `using var` -
 // a `using var` here disposes it right after startup, cancelling every subsequent MCP request.
 string toolboxName = "my-toolbox";
-
 var skillsProvider = await builder.GetTestAgentSkillsProviderAsync(projectClient, toolboxName, foundrySettings, credential);
 
 // Agent itself.
@@ -106,8 +110,8 @@ builder.Services.AddFoundryToolboxes(credential);
 // This adds OpenAI Conversations endpoints, but I guess with the combination of FoundryResponses and AG-UI,
 // Isn't using this? The conversation id comes from the first response.
 
-// TODO: test the theory
-builder.Services.AddOpenAIConversations(); // Maybe I don't need this with foundry responses? Perhaps just need to map?
+// Needed for conversations in the DevUI site, but presumable not 
+builder.Services.AddOpenAIConversations();
 
 var agentHost = builder.Build();
 
@@ -151,5 +155,21 @@ agentHost.Use(async (context, next) =>
 // Not a 'Microsoft.Agents.AI.Foundry.Hosting.AgentSessionStore' but a 'Microsoft.Agents.AI.Hosting.AgentSessionStore' (obviously!)
 // The FoundryBackedAgentSessionStore adapts the Foundry-specific store to the AG-UI-compatible contract.
 agentHost.MapAGUIServer(agentName, "/ag-ui");
+
+
+// Need a way of getting a conversation history back for a given user (and ideally get historical conversations for a user as well).
+agentHost.MapGet("/get-chat-conversation/{conversationId}",
+    async (Microsoft.Agents.AI.Hosting.AgentSessionStore sessionStore,
+    [FromRoute] string conversationId,
+    [FromKeyedServices(agentName)] AIAgent agent,
+    CancellationToken ct = default) =>
+    {
+        // If I use my 'FoundryBackedAgentSessionStore', it's going to presumably get from the file system, which is transient/destroyed on restart.
+        // Do I end up needing my own persistent storage to return chat history for resume? Seems to defeat some of the value of foundry managed chat history to an extent.
+        // Maybe I do simply plug in my own, use cosmosDb instead of the local file storage?
+
+        var session = await sessionStore.GetSessionAsync(agent, conversationId, ct);
+        return session;
+    });
 
 await agentHost.RunAsync();

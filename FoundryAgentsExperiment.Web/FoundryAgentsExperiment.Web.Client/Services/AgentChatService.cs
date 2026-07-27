@@ -1,22 +1,35 @@
+using System.Runtime.CompilerServices;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
 namespace FoundryAgentsExperiment.Web.Client.Services;
 
 /// <summary>
-/// Encapsulates the AG-UI turn pattern validated by the integration tests:
-/// each turn sends only [system + user] to the agent; Foundry manages the
-/// conversation history server-side, keyed by the server-assigned thread ID.
+/// Encapsulates the AG-UI turn pattern validated by the integration tests, using the AIAgent /
+/// AgentSession abstraction (rather than a raw IChatClient) so client-side tool calls and
+/// generative UI content can be layered on later. Each turn sends only [system + user] to the
+/// agent; Foundry manages the conversation history server-side, keyed by the server-assigned
+/// thread ID carried by the AgentSession.
 /// </summary>
-public class AgentChatService(IChatClient chatClient)
+public class AgentChatService(ChatClientAgent agent)
 {
     /// <summary>
-    /// Streams the agent's response for a single turn.
+    /// Creates a session for a new conversation, or one that resumes an existing Foundry thread.
     /// </summary>
     /// <param name="threadId">
-    /// The server-assigned Foundry thread ID from the previous turn, or <see langword="null"/>
-    /// on the first turn of a new conversation. The server will assign one and return it
-    /// via <paramref name="onThreadIdAssigned"/>.
+    /// The server-assigned Foundry thread ID from a previous conversation, or <see langword="null"/>
+    /// to start a brand-new conversation.
     /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    public ValueTask<AgentSession> CreateSessionAsync(string? threadId, CancellationToken ct = default) =>
+        threadId is { Length: > 0 }
+            ? agent.CreateSessionAsync(threadId, ct)
+            : agent.CreateSessionAsync(ct);
+
+    /// <summary>
+    /// Streams the agent's response for a single turn on an existing <see cref="AgentSession"/>.
+    /// </summary>
+    /// <param name="session">The session for this conversation, from <see cref="CreateSessionAsync"/>.</param>
     /// <param name="systemPrompt">Fresh context injected at the start of every turn.</param>
     /// <param name="userText">The user's message for this turn.</param>
     /// <param name="onThreadIdAssigned">
@@ -25,31 +38,34 @@ public class AgentChatService(IChatClient chatClient)
     /// </param>
     /// <param name="ct">Cancellation token.</param>
     public async IAsyncEnumerable<string> StreamAsync(
-        string? threadId,
+        AgentSession session,
         string systemPrompt,
         string userText,
         Func<string, Task>? onThreadIdAssigned = null,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var options = new ChatOptions { ConversationId = threadId };
+        List<ChatMessage> messages =
+        [
+            new(ChatRole.System, systemPrompt),
+            new(ChatRole.User, userText)
+        ];
 
-        var messages = new[]
+        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, cancellationToken: ct))
         {
-            new ChatMessage(ChatRole.System, systemPrompt),
-            new ChatMessage(ChatRole.User, userText)
-        };
+            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
 
-        await foreach (var update in chatClient.GetStreamingResponseAsync(messages, options, ct))
-        {
             // Capture the server-assigned thread ID the first time it appears
-            if (onThreadIdAssigned is not null && !string.IsNullOrEmpty(update.ConversationId))
+            if (onThreadIdAssigned is not null && !string.IsNullOrEmpty(chatUpdate.ConversationId))
             {
-                await onThreadIdAssigned(update.ConversationId);
+                await onThreadIdAssigned(chatUpdate.ConversationId);
                 onThreadIdAssigned = null; // fire once only
             }
 
-            if (!string.IsNullOrEmpty(update.Text))
-                yield return update.Text;
+            foreach (AIContent content in update.Contents)
+            {
+                if (content is TextContent textContent && !string.IsNullOrEmpty(textContent.Text))
+                    yield return textContent.Text;
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 @page "/chat"
 @page "/chat/{ConversationId}"
 @rendermode InteractiveWebAssembly
+@using Microsoft.Agents.AI
 @using Microsoft.Extensions.AI
 @inject AgentChatService AgentChatService
 @inject ConversationStore ConversationStore
@@ -44,6 +45,7 @@
 
     private string _conversationId = Guid.NewGuid().ToString(); // localStorage key + URL param
     private string? _threadId;                                   // server-assigned Foundry thread ID
+    private AgentSession? _session;                               // AG-UI session bound to _threadId
     private string _userId = "unknown";
     private bool _isFirstMessage = true;
     private bool _isStreaming;
@@ -133,10 +135,19 @@
         _isStreaming = true;
         _streamingCts = new CancellationTokenSource();
 
+        // Render the assistant bubble + typing indicator immediately - otherwise nothing shows
+        // until the first network round-trip (session creation, then the first streamed chunk)
+        // completes, leaving a silent gap after the user's message appears.
+        StateHasChanged();
+
         try
         {
+            // Reuse the session across turns of the same conversation; create it (resuming the
+            // stored thread id, if any) the first time this page instance sends a message.
+            _session ??= await AgentChatService.CreateSessionAsync(_threadId, _streamingCts.Token);
+
             await foreach (var chunk in AgentChatService.StreamAsync(
-                _threadId, systemPrompt, userText,
+                _session, systemPrompt, userText,
                 onThreadIdAssigned: async id =>
                 {
                     _threadId = id;
@@ -174,6 +185,8 @@
     {
         CancelStreaming();
         _conversationId = Guid.NewGuid().ToString();
+        _threadId = null;
+        _session = null;
         _isFirstMessage = true;
         _displayMessages.Clear();
         _inProgressMessage = null;
@@ -185,6 +198,7 @@
         CancelStreaming();
         _conversationId = conversation.Id;
         _threadId = conversation.ThreadId;
+        _session = null;
         _isFirstMessage = false;
         _displayMessages.Clear();
         _inProgressMessage = null;

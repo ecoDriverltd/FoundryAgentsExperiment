@@ -1,7 +1,14 @@
 ﻿@page "/"
 
+@inject NavigationManager Nav
+
 <PageTitle>Home</PageTitle>
 
-<h1>Hello, world!</h1>
+<p>Loading...</p>
 
-Welcome to your new app.
+@code {
+    protected override void OnInitialized()
+    {
+        Nav.NavigateTo($"/chat");
+    }
+}

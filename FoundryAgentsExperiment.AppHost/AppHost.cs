@@ -3,6 +3,7 @@ using Azure.AI.Projects.Agents;
 using Azure.Provisioning.Authorization;
 using Azure.Provisioning.CognitiveServices;
 using Azure.Provisioning.Expressions;
+using Microsoft.Extensions.Hosting;
 using Projects;
 
 var builder = DistributedApplication.CreateBuilder(args);
@@ -68,9 +69,12 @@ var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
             configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
         });
 
-var devui = builder.AddDevUI("devui")
-    .WithAgentService(agent)
-    .WaitFor(agent);
+if (builder.Environment.IsDevelopment())
+{
+    var devui = builder.AddDevUI("devui")
+         .WithAgentService(agent)
+         .WaitFor(agent);
+}
 
 builder.AddProject<FoundryAgentsExperiment_Web>("foundryagentsexperiment-web")
     .WithReference(project)
