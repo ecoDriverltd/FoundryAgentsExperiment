@@ -10,6 +10,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Aspire.Microsoft.EntityFrameworkCore.Cosmos" Version="13.4.6" />
+    <PackageReference Include="Microsoft.Agents.AI.CosmosNoSql" Version="1.15.0-preview.260722.1" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.15.0" />
     <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.15.0-preview.260722.1" />
     <PackageReference Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.15.0-preview.260722.1" />
     <PackageReference Include="Azure.AI.Projects" Version="2.1.0-beta.4" />
