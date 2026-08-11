@@ -1,5 +1,7 @@
 using Aspire.Hosting.Foundry;
 using Azure.AI.Projects.Agents;
+using Azure.Core;
+using Azure.Provisioning;
 using Azure.Provisioning.Authorization;
 using Azure.Provisioning.CognitiveServices;
 using Azure.Provisioning.Expressions;
@@ -13,8 +15,18 @@ var builder = DistributedApplication.CreateBuilder(args);
 // role GUID can be passed directly until the SDK adds a friendly name for it.
 var foundryUserRole = (CognitiveServicesBuiltInRole)"53ca6127-db72-4b80-b1b0-d745d6d5456d";
 
-var foundry = builder.AddFoundry("foundry");
-var project = foundry.AddProject("agent-test")
+var foundry = builder.AddFoundry("foundrysw");
+
+foundry.ConfigureInfrastructure(infra =>
+{
+    var resources = infra.GetProvisionableResources();
+    var foundryResource = resources.OfType<CognitiveServicesAccount>().Single(r => r.BicepIdentifier == foundry.Resource.Name);
+
+    // Setting to Sweden central as default location for OpenAI resources, as this has the greatest model/functionality availability.
+    foundryResource.Location = new BicepValue<AzureLocation>(AzureLocation.SwedenCentral);
+});
+
+var project = foundry.AddProject("agent-test-sw")
     // The Foundry Memory service authenticates as the *project's own* system-assigned managed
     // identity when it calls back into the embedding deployment (this is a real Entra hop, not
     // implicit same-account access) - grant that identity access to the account. Note:
@@ -29,6 +41,8 @@ var project = foundry.AddProject("agent-test")
     {
         var account = (CognitiveServicesAccount)foundry.Resource.AddAsExistingResource(infra);
         var cogProject = infra.GetProvisionableResources().OfType<CognitiveServicesProject>().Single();
+
+        cogProject.Location = new BicepValue<AzureLocation>(AzureLocation.SwedenCentral);
 
         // Build the RoleAssignment manually (rather than via CreateRoleAssignment) because that
         // helper derives its Bicep identifier from CognitiveServicesBuiltInRole.GetBuiltInRoleName,

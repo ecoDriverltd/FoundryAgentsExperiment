@@ -11,7 +11,7 @@ public sealed record FoundrySettings(Uri ProjectUri, string DeploymentName, stri
     public static FoundrySettings FromConfiguration(IConfiguration configuration)
     {
         string projectEndpoint = ParseConnectionValue(
-            configuration.GetConnectionString("agent-test")
+            configuration.GetConnectionString("agent-test-sw")
                 ?? throw new InvalidOperationException("Connection string 'agent-test' is not set."),
             "Endpoint");
 

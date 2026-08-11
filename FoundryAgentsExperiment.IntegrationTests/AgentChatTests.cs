@@ -83,7 +83,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 
         this.app = await appBuilder.BuildAsync(cancellationToken).WaitAsync(DefaultTimeout, cancellationToken);
         await this.app.StartAsync(cancellationToken).WaitAsync(DefaultTimeout, cancellationToken);
-        await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-test", cancellationToken);
+        await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-test-sw", cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-dotnet", cancellationToken);
 
         // Stream the agent-dotnet resource's console logs (our [Wire]/[SessionStore] Checkpoint 1/2
@@ -131,7 +131,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 
     private async Task<AIProjectClient> CreateProjectClientAsync()
     {
-        var endPoint = await app!.GetConnectionStringAsync("agent-test") ?? throw new InvalidOperationException("No connection string to foundry");
+        var endPoint = await app!.GetConnectionStringAsync("agent-test-sw") ?? throw new InvalidOperationException("No connection string to foundry");
         var endPointUri = new Uri(endPoint.Replace("Endpoint=", ""));
         this.projectClient = new AIProjectClient(endPointUri, GetCredential());
 
