@@ -1,3 +1,4 @@
+using AGUI.Client;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
@@ -5,7 +6,6 @@ using Azure.AI.Projects;
 using Azure.Core;
 using Azure.Identity;
 using Microsoft.Agents.AI;
-using Microsoft.Agents.AI.AGUI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -125,7 +125,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var http = app!.CreateHttpClient("agent-dotnet");
         http.DefaultRequestHeaders.Add("x-agent-user-id", userId);
 
-        return new AGUIChatClient(http, "/ag-ui")
+        return new AGUIChatClient(new AGUIChatClientOptions(http, "/ag-ui"))
             .AsAIAgent(name: "agui-client", description: "AG-UI Client Agent");
     }
 
@@ -153,7 +153,6 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var projectClient = await CreateProjectClientAsync();
 
         AgentSession session = await agent.CreateSessionAsync(ct);
-
         List<ChatMessage> messages =
         [
             new(ChatRole.System, "You are a helpful assistant.")
@@ -170,7 +169,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         // Stream the response.
         await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, cancellationToken: ct))
         {
-            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
+            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdateWithConversationId();
 
             // First update indicates run started
             if (isFirstUpdate)
@@ -203,7 +202,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         // Stream the response.
         await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session2, cancellationToken: ct))
         {
-            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
+            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdateWithConversationId();
 
             // First update indicates run started
             if (isFirstUpdate)
