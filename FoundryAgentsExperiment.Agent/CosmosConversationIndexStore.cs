@@ -93,6 +93,23 @@ public sealed class CosmosConversationIndexStore(IServiceScopeFactory scopeFacto
             .ToListAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Looks up a single conversation, scoped to the caller's userId. Used to verify ownership
+    /// before returning a conversation's full message history (see /get-chat-conversation in Agent.cs).
+    /// </summary>
+    public async Task<ConversationIndexEntry?> GetConversationAsync(
+        string conversationId,
+        string userId,
+        CancellationToken cancellationToken = default)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ConversationIndexDbContext>();
+
+        return await context.Conversations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(entry => entry.Id == conversationId && entry.UserId == userId, cancellationToken);
+    }
+
     private static string? Truncate(string? text, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(text))

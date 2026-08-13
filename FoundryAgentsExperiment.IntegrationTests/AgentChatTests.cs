@@ -33,6 +33,14 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     private CancellationTokenSource? resourceLogCts;
 
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
+
+    // Aspire's Cosmos resource re-runs its ARM deployment (Bicep) on every AppHost start even when the
+    // underlying account already exists, to reconcile any container/config changes (e.g. the
+    // "agent-sessions" container added for CosmosAgentSessionStore) - this reconciliation deployment
+    // routinely exceeds DefaultTimeout on its own, well before the agent-dotnet/agent-test-sw resources
+    // even start. Give BuildAsync/StartAsync a longer budget than the per-turn DefaultTimeout used
+    // elsewhere in this class.
+    private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(2);
     private AIProjectClient? projectClient;
 
     public async ValueTask InitializeAsync()
@@ -81,8 +89,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             });
         });
 
-        this.app = await appBuilder.BuildAsync(cancellationToken).WaitAsync(DefaultTimeout, cancellationToken);
-        await this.app.StartAsync(cancellationToken).WaitAsync(DefaultTimeout, cancellationToken);
+        this.app = await appBuilder.BuildAsync(cancellationToken).WaitAsync(StartupTimeout, cancellationToken);
+        await this.app.StartAsync(cancellationToken).WaitAsync(StartupTimeout, cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-test-sw", cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-dotnet", cancellationToken);
 

@@ -76,6 +76,10 @@ var database = cosmosDb.AddCosmosDatabase("agent-history");
 database.AddContainer("chat-history", partitionKeyPaths: ["/tenantId", "/userId", "/conversationId"]);
 // CosmosConversationIndexStore partitions by userId only (see RecordConversationTurnAsync/ListConversationsAsync).
 database.AddContainer("conversation-index", partitionKeyPath: "/userId");
+// CosmosAgentSessionStore partitions by userId only (see AgentSessionDbContext), storing the small
+// serialized AgentSession (ConversationId + StateBag bookkeeping) - never chat messages, which stay
+// in the "chat-history" container above.
+database.AddContainer("agent-sessions", partitionKeyPath: "/userId");
 
 // Register project as foundry hosted agent
 var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")

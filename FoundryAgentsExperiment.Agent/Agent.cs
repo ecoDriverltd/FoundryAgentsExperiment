@@ -49,6 +49,7 @@ var cosmosEndpoint = builder.Configuration.GetConnectionString("cosmos")
 var cosmosClient = new CosmosClient(cosmosEndpoint, credential);
 
 builder.AddCosmosDbContext<ConversationIndexDbContext>("cosmos", "agent-history");
+builder.AddCosmosDbContext<AgentSessionDbContext>("cosmos", "agent-history");
 
 Console.WriteLine($"Project Endpoint: {foundrySettings.ProjectUri}");
 Console.WriteLine($"Model Deployment: {foundrySettings.DeploymentName}");
@@ -67,10 +68,12 @@ builder.Services.AddSingleton<IHttpContextAccessor>(httpContextAccessor);
 // than the one MapAGUI resolves (Microsoft.Agents.AI.Hosting.AgentSessionStore). Registering that
 // type here was silently ignored by MapAGUI - use the AG-UI-compatible store instead.
 
-// Mode 2 (CosmosChatHistoryProvider) owns the durable transcript, so the AG-UI session store no
-// longer needs to persist or look up anything - it just tags new sessions with the wire threadId
-// (see ThinAgentSessionStore) and, on save, updates the lightweight conversation index.
-builder.Services.AddThinAgentSessionStore(agentName);
+// Mode 2 (CosmosChatHistoryProvider) owns the durable transcript, so the AG-UI session store only
+// needs to persist the small serialized AgentSession (ConversationId + StateBag provider bookkeeping,
+// e.g. CompactionProvider's running summary state) - never chat messages, which stay in
+// CosmosChatHistoryProvider's "chat-history" container (see CosmosAgentSessionStore). On save, it also
+// updates the lightweight conversation index.
+builder.Services.AddCosmosAgentSessionStore(agentName);
 
 // Registering this lets MapAGUIServer auto-wrap the AgentSessionStore in an
 // IsolationKeyScopedAgentSessionStore, the framework's own idiomatic mechanism for scoping
@@ -103,7 +106,7 @@ var chatHistoryProvider = new CosmosChatHistoryProvider(
     databaseId: "agent-history",
     containerId: "chat-history",
     stateInitializer: session => new CosmosChatHistoryProvider.State(
-        conversationId: session?.StateBag.TryGetValue<string>(ThinAgentSessionStore.ConversationIdStateBagKey, out var threadId) == true ? threadId ?? Guid.NewGuid().ToString("n") : Guid.NewGuid().ToString("n"),
+        conversationId: session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.ConversationIdStateBagKey, out var threadId) == true ? threadId ?? Guid.NewGuid().ToString("n") : Guid.NewGuid().ToString("n"),
         tenantId: "dev",
         userId: httpContextAccessor.GetAgentUserId()))
 {
@@ -185,7 +188,7 @@ agentHost.MapFoundryResponses("/v1");
 agentHost.MapOpenAIConversations();
 
 // Debug-only logging of the raw wire payload for every /ag-ui call BEFORE MapAGUI's handler runs.
-// The conversation index is now updated from ThinAgentSessionStore.SaveSessionAsync (which
+// The conversation index is now updated from CosmosAgentSessionStore.SaveSessionAsync (which
 // MapAGUIServer guarantees fires exactly once per turn, after streaming completes), not from here.
 agentHost.Use(async (context, next) =>
 {
@@ -217,22 +220,54 @@ agentHost.Use(async (context, next) =>
 
 // Hosted agent can work with conversations via AG-UI but needs a session store.
 // Not a 'Microsoft.Agents.AI.Foundry.Hosting.AgentSessionStore' but a 'Microsoft.Agents.AI.Hosting.AgentSessionStore' (obviously!)
-// ThinAgentSessionStore adapts our own conversation index/ChatHistoryProvider setup to the AG-UI-compatible contract.
+// CosmosAgentSessionStore adapts our own conversation index/ChatHistoryProvider setup to the AG-UI-compatible contract.
 agentHost.MapAGUIServer(agentName, "/ag-ui");
 
-// Need a way of getting a conversation history back for a given user (and ideally get historical conversations for a user as well).
+// Returns a conversation's full message history for display/resume in the UI. Reads directly from
+// chatHistoryProvider (the Cosmos-backed instance constructed above) rather than going through
+// AgentSessionStore.GetSessionAsync - that store only restores the small serialized AgentSession
+// (ConversationId + StateBag provider bookkeeping, see CosmosAgentSessionStore); it never carries
+// chat messages. The actual transcript lives in CosmosChatHistoryProvider, whose only read hook is
+// the ChatHistoryProvider base contract's InvokingAsync(context, ct) - normally invoked by the
+// framework at the start of a turn. Calling it here directly, with no new request messages, returns
+// just the persisted history for the conversationId/tenantId/userId resolved by chatHistoryProvider's
+// stateInitializer.
 agentHost.MapGet("/get-chat-conversation/{conversationId}",
-    async (Microsoft.Agents.AI.Hosting.AgentSessionStore sessionStore,
-    [FromRoute] string conversationId,
-    [FromKeyedServices(agentName)] AIAgent agent,
-    CancellationToken ct = default) =>
+    async (
+        [FromRoute] string conversationId,
+        [FromKeyedServices(agentName)] AIAgent agent,
+        Microsoft.Agents.AI.Hosting.AgentSessionStore sessionStore,
+        CosmosConversationIndexStore conversationIndexStore,
+        IHttpContextAccessor httpContextAccessor,
+        CancellationToken ct = default) =>
     {
-        // If I use my 'FoundryBackedAgentSessionStore', it's going to presumably get from the file system, which is transient/destroyed on restart.
-        // Do I end up needing my own persistent storage to return chat history for resume? Seems to defeat some of the value of foundry managed chat history to an extent.
-        // Maybe I do simply plug in my own, use cosmosDb instead of the local file storage?
+        var userId = httpContextAccessor.GetAgentUserId();
 
+        // Verify the caller owns this conversation before loading its transcript (see Session
+        // docs' guidance on scoping service-side conversation ids to the authenticated user/tenant).
+        var indexEntry = await conversationIndexStore.GetConversationAsync(conversationId, userId, ct);
+        if (indexEntry is null)
+        {
+            return Results.NotFound();
+        }
+
+        // Session only needs to carry the wire threadId in StateBag - chatHistoryProvider's
+        // stateInitializer (in Agent.cs) reads it back out to resolve conversationId/tenantId/userId.
         var session = await sessionStore.GetSessionAsync(agent, conversationId, ct);
-        return session;
+
+        var invokingContext = new ChatHistoryProvider.InvokingContext(agent, session, requestMessages: []);
+        var messages = await chatHistoryProvider.InvokingAsync(invokingContext, ct);
+
+        return Results.Ok(new
+        {
+            conversationId,
+            title = indexEntry.Title,
+            messages = messages.Select(message => new
+            {
+                role = message.Role.Value,
+                text = message.Text,
+            }),
+        });
     });
 
 // Lists a user's past conversations (id, title, timestamps) from the lightweight Cosmos index,
