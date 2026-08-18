@@ -8,8 +8,10 @@ public sealed class ChatMessagePersistenceTracker
 
     private readonly ConcurrentDictionary<string, DateTimeOffset> persistedPrompts = new();
 
-    public bool TryMarkPersisted(string key)
+    public bool TryMarkPersisted(string? key)
     {
+        if (key is null) return false;
+
         var now = DateTimeOffset.UtcNow;
         foreach (var entry in persistedPrompts)
         {

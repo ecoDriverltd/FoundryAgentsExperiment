@@ -17,7 +17,7 @@
 	<PackageReference Include="Microsoft.Agents.AI" Version="1.18.0" />
 	<PackageReference Include="Microsoft.Agents.AI.Foundry" Version="1.18.0-preview.260818.1" />
 	<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
-	<PackageReference Include="Aspire.Hosting.Testing" Version="13.4.6" />
+	<PackageReference Include="Aspire.Hosting.Testing" Version="13.5.0" />
 	<PackageReference Include="AGUI.Client" Version="0.0.5" />
 	<PackageReference Include="xunit.v3" Version="4.0.0" />
 	<PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
