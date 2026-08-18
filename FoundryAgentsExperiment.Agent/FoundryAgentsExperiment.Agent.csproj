@@ -11,17 +11,18 @@
 
   <ItemGroup>
     <PackageReference Include="Aspire.Microsoft.EntityFrameworkCore.Cosmos" Version="13.4.6" />
-    <PackageReference Include="Microsoft.Agents.AI.CosmosNoSql" Version="1.17.0-preview.260804.1" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.17.0" />
-    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.17.0-preview.260804.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.17.0-preview.260804.1" />
+    <PackageReference Include="Microsoft.Agents.AI.CosmosNoSql" Version="1.18.0-preview.260818.1" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.18.0" />
+    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.18.0-preview.260818.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.18.0-preview.260818.1" />
     <PackageReference Include="Azure.AI.Projects" Version="2.1.0-beta.4" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.17.0-preview.260804.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Mcp" Version="1.17.0-alpha.260804.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.18.0-preview.260818.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Mcp" Version="1.18.0-alpha.260818.1" />
     <PackageReference Include="ModelContextProtocol" Version="[1.4.1]" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\FoundryAgentsExperiment.Shared\FoundryAgentsExperiment.Shared.csproj" />
     <ProjectReference Include="..\FoundryAgentsExperiment.ServiceDefaults\FoundryAgentsExperiment.ServiceDefaults.csproj" />
   </ItemGroup>
 

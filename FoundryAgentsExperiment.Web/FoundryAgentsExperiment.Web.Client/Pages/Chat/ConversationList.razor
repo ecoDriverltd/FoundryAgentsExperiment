@@ -1,15 +1,13 @@
-@inject ConversationStore Store
-
 <div class="conversation-list">
     <div class="conversation-list-header">Conversations</div>
 
-    @if (_conversations.Count == 0)
+    @if (Conversations.Count == 0)
     {
         <div class="conversation-list-empty">No previous conversations</div>
     }
     else
     {
-        @foreach (var conversation in _conversations)
+        @foreach (var conversation in Conversations)
         {
             var itemClass = conversation.Id == ActiveConversationId
                 ? "conversation-item active"
@@ -17,34 +15,21 @@
             <div class="@itemClass"
                  @onclick="@(() => OnSelected.InvokeAsync(conversation))">
                 <div class="conversation-title">@conversation.Title</div>
-                <div class="conversation-date">@FormatDate(conversation.LastMessageAt)</div>
+                <div class="conversation-date">@FormatDate(conversation.LastUpdatedAt)</div>
             </div>
         }
     }
 </div>
 
 @code {
-    private List<ConversationSummary> _conversations = [];
+    [Parameter]
+    public IReadOnlyList<ConversationSummary> Conversations { get; set; } = [];
 
     [Parameter]
     public string? ActiveConversationId { get; set; }
 
     [Parameter]
     public EventCallback<ConversationSummary> OnSelected { get; set; }
-
-    protected override async Task OnInitializedAsync()
-    {
-        if (!RendererInfo.IsInteractive)
-            return;
-
-        await RefreshAsync();
-    }
-
-    public async Task RefreshAsync()
-    {
-        _conversations = await Store.GetAllAsync();
-        StateHasChanged();
-    }
 
     private static string FormatDate(DateTimeOffset date)
     {

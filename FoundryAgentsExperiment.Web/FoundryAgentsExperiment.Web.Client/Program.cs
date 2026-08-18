@@ -1,5 +1,5 @@
+using AGUI.Client;
 using FoundryAgentsExperiment.Web.Client.Services;
-using Microsoft.Agents.AI.AGUI;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
@@ -15,8 +15,9 @@ builder.Services.AddScoped<GeolocationService>();
 // that close over page-scoped, JS-interop-backed services like GeolocationService.
 builder.Services.AddHttpClient<AGUIChatClient>("ag-ui", client =>
     client.BaseAddress = new Uri(builder.HostEnvironment.BaseAddress))
-    .AddTypedClient<AGUIChatClient>((http, _) => new AGUIChatClient(http, "/ag-ui"));
+    .AddTypedClient<AGUIChatClient>((http, _) => new AGUIChatClient(new(http, "/ag-ui")));
 
-builder.Services.AddScoped<ConversationStore>();
+builder.Services.AddHttpClient<AgentConversationClient>(client =>
+    client.BaseAddress = new Uri(builder.HostEnvironment.BaseAddress));
 
 await builder.Build().RunAsync();

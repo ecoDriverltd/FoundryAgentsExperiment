@@ -8,10 +8,9 @@ using System.Text.Json;
 namespace FoundryAgentsExperiment.Agent;
 
 /// <summary>
-/// One document per (conversationId, userId), storing the small serialized <see cref="AgentSession"/>
-/// (ConversationId + StateBag provider bookkeeping - e.g. CompactionProvider's running summary state).
-/// Never contains chat messages: those live exclusively in CosmosChatHistoryProvider's "chat-history"
-/// container, addressed by the conversationId/tenantId/userId carried in this session's StateBag.
+/// One document per (conversation ID, user ID), storing the serialized <see cref="AgentSession"/>
+/// and provider bookkeeping. Chat messages remain in CosmosChatHistoryProvider's separate
+/// "chat-history" container.
 /// </summary>
 public sealed record AgentSessionEntry(
     string Id,
@@ -36,32 +35,15 @@ public sealed class AgentSessionDbContext(DbContextOptions<AgentSessionDbContext
         entity.Property(entry => entry.Id).ToJsonProperty("id");
         entity.Property(entry => entry.UserId).ToJsonProperty("userId");
 
-        // Mirrors the retention window on CosmosChatHistoryProvider.MessageTtlSeconds (Agent.cs) and
-        // ConversationIndexDbContext - see the equivalent note there for why TTL sync with an
-        // already-existing container needs to be done via Bicep/Portal/Data Explorer instead.
+        // Keep serialized state aligned with the conversation index and chat-history retention window.
         entity.HasDefaultTimeToLive((int)TimeSpan.FromDays(365).TotalSeconds);
     }
 }
 
 /// <summary>
-/// AG-UI-facing <see cref="AgentSessionStore"/> for Mode 2 (client-managed chat history via
-/// <c>CosmosChatHistoryProvider</c>). Persists ONLY the small serialized <see cref="AgentSession"/>
-/// (ConversationId + StateBag provider bookkeeping) in the "agent-sessions" container - the transcript's
-/// durable home remains the ChatHistoryProvider, so this store deliberately never stores messages,
-/// avoiding duplication of the "chat-history" container's content.
-///
-/// NOTE: pre-tagging the session via <c>ChatClientAgent.CreateSessionAsync(conversationId, ct)</c> was
-/// tried and rejected - it causes ChatClientAgent to feed that conversationId into the underlying
-/// Responses API's <c>previous_response_id</c> parameter, which broke turn 2 with an HTTP 400
-/// (invalid_request_error: string_above_max_length) since our threadId format exceeds the 64-char
-/// limit expected there. Instead, the threadId is stashed on the session's
-/// <see cref="AgentSession.StateBag"/> (per-session storage, not ambient/thread-flow state) under
-/// <see cref="ConversationIdStateBagKey"/>, which the ChatHistoryProvider's stateInitializer in
-/// Agent.cs reads back out via the same key.
-///
-/// SaveSessionAsync is the once-per-turn hook (guaranteed by MapAGUIServer to fire exactly once, after
-/// streaming completes) for both persisting the serialized session and updating the lightweight
-/// conversation index used by the /conversations list.
+/// AG-UI-facing <see cref="AgentSessionStore"/>. It persists the small serialized
+/// <see cref="AgentSession"/> by AG-UI thread ID and user ID. Chat messages remain in the
+/// server-managed CosmosChatHistoryProvider transcript.
 /// </summary>
 public sealed class CosmosAgentSessionStore(
     IServiceScopeFactory scopeFactory,
@@ -69,20 +51,20 @@ public sealed class CosmosAgentSessionStore(
     IHttpContextAccessor httpContextAccessor) : AgentSessionStore
 {
     /// <summary>
-    /// StateBag key under which the AG-UI threadId is stashed on each newly-created session. Read by
-    /// the ChatHistoryProvider's stateInitializer (see Agent.cs) since ChatClientAgentSession.ConversationId
-    /// can't be relied on for this without breaking the underlying Responses API call (see class doc).
+    /// StateBag key through which the AG-UI thread ID identifies the server-managed transcript.
+    /// This is deliberately separate from MEAI's ConversationId.
     /// </summary>
     public const string ConversationIdStateBagKey = "ag-ui-thread-id";
 
     public override async ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string conversationId, CancellationToken cancellationToken = default)
     {
         var userId = httpContextAccessor.GetAgentUserId();
+        var threadId = GetThreadId(conversationId, userId);
 
         using var scope = scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AgentSessionDbContext>();
         var existing = await context.Sessions.AsNoTracking().SingleOrDefaultAsync(
-            entry => entry.Id == conversationId && entry.UserId == userId,
+            entry => entry.Id == threadId && entry.UserId == userId,
             cancellationToken);
 
         if (existing is not null)
@@ -92,13 +74,14 @@ public sealed class CosmosAgentSessionStore(
         }
 
         var session = await agent.CreateSessionAsync(cancellationToken);
-        session.StateBag.SetValue(ConversationIdStateBagKey, conversationId);
+        session.StateBag.SetValue(ConversationIdStateBagKey, threadId);
         return session;
     }
 
     public override async ValueTask SaveSessionAsync(AIAgent agent, string conversationId, AgentSession session, CancellationToken cancellationToken = default)
     {
         var userId = httpContextAccessor.GetAgentUserId();
+        var threadId = GetThreadId(conversationId, userId);
 
         var serialized = await agent.SerializeSessionAsync(session, cancellationToken: cancellationToken);
         var serializedText = serialized.GetRawText();
@@ -107,13 +90,13 @@ public sealed class CosmosAgentSessionStore(
         var context = scope.ServiceProvider.GetRequiredService<AgentSessionDbContext>();
         var now = DateTimeOffset.UtcNow;
         var existing = await context.Sessions.SingleOrDefaultAsync(
-            entry => entry.Id == conversationId && entry.UserId == userId,
+            entry => entry.Id == threadId && entry.UserId == userId,
             cancellationToken);
 
         if (existing is null)
         {
             context.Sessions.Add(new AgentSessionEntry(
-                Id: conversationId,
+                Id: threadId,
                 UserId: userId,
                 SerializedSession: serializedText,
                 CreatedAt: now,
@@ -135,17 +118,18 @@ public sealed class CosmosAgentSessionStore(
                 ?.Text;
         }
 
-        await conversationIndexStore.RecordConversationTurnAsync(conversationId, userId, firstUserMessageText, cancellationToken);
+        await conversationIndexStore.RecordConversationTurnAsync(threadId, userId, firstUserMessageText, cancellationToken);
     }
 
     public override async ValueTask DeleteSessionAsync(AIAgent agent, string conversationId, CancellationToken cancellationToken = default)
     {
         var userId = httpContextAccessor.GetAgentUserId();
+        var threadId = GetThreadId(conversationId, userId);
 
         using var scope = scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AgentSessionDbContext>();
         var existing = await context.Sessions.SingleOrDefaultAsync(
-            entry => entry.Id == conversationId && entry.UserId == userId,
+            entry => entry.Id == threadId && entry.UserId == userId,
             cancellationToken);
 
         if (existing is not null)
@@ -153,6 +137,14 @@ public sealed class CosmosAgentSessionStore(
             context.Sessions.Remove(existing);
             await context.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    private static string GetThreadId(string conversationId, string userId)
+    {
+        var isolationPrefix = userId + "::";
+        return conversationId.StartsWith(isolationPrefix, StringComparison.Ordinal)
+            ? conversationId[isolationPrefix.Length..]
+            : conversationId;
     }
 }
 

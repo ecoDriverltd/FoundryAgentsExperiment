@@ -10,10 +10,18 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.10" />
-		<PackageReference Include="Microsoft.Agents.AI" Version="1.17.0" />
-		<PackageReference Include="Microsoft.Agents.AI.AGUI" Version="1.13.0-preview.260703.1" />
-		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.10" />
+		<PackageReference Include="AGUI.Client" Version="0.0.5" />
+		<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.11" />
+		<PackageReference Include="Microsoft.Agents.AI" Version="1.18.0" />
+		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\..\FoundryAgentsExperiment.Shared\FoundryAgentsExperiment.Shared.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Folder Include="Models\" />
 	</ItemGroup>
 
 </Project>

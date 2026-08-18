@@ -11,7 +11,8 @@ public sealed record ConversationIndexEntry(
     string UserId,
     string Title,
     DateTimeOffset CreatedAt,
-    DateTimeOffset LastUpdatedAt);
+    DateTimeOffset LastUpdatedAt,
+    string? LastRunId = null);
 
 /// <summary>
 /// Maps the conversation index documents stored in the existing Cosmos DB container.
@@ -58,9 +59,11 @@ public sealed class CosmosConversationIndexStore(IServiceScopeFactory scopeFacto
             entry => entry.Id == conversationId && entry.UserId == userId,
             cancellationToken);
 
-        var title = existing?.Title
-            ?? Truncate(firstUserMessageText, 60)
-            ?? "New conversation";
+        var title = existing?.Title == "New conversation"
+            ? Truncate(firstUserMessageText, 60) ?? existing.Title
+            : existing?.Title
+                ?? Truncate(firstUserMessageText, 60)
+                ?? "New conversation";
 
         if (existing is null)
         {
@@ -69,14 +72,38 @@ public sealed class CosmosConversationIndexStore(IServiceScopeFactory scopeFacto
                 UserId: userId,
                 Title: title,
                 CreatedAt: now,
-                LastUpdatedAt: now));
+                LastUpdatedAt: now,
+                LastRunId: null));
         }
         else
         {
+            context.Entry(existing).Property(entry => entry.Title).CurrentValue = title;
             context.Entry(existing).Property(entry => entry.LastUpdatedAt).CurrentValue = now;
         }
 
         await context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<bool> UpdateLastRunIdAsync(
+        string conversationId,
+        string userId,
+        string runId,
+        CancellationToken cancellationToken = default)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ConversationIndexDbContext>();
+        var existing = await context.Conversations.SingleOrDefaultAsync(
+            entry => entry.Id == conversationId && entry.UserId == userId,
+            cancellationToken);
+
+        if (existing is null)
+        {
+            return false;
+        }
+
+        context.Entry(existing).Property(entry => entry.LastRunId).CurrentValue = runId;
+        await context.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     public async Task<IReadOnlyList<ConversationIndexEntry>> ListConversationsAsync(

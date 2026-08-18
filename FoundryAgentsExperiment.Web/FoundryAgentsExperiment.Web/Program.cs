@@ -1,6 +1,6 @@
+using AGUI.Client;
 using FoundryAgentsExperiment.Web.Client.Services;
 using FoundryAgentsExperiment.Web.Components;
-using Microsoft.Agents.AI.AGUI;
 using Yarp.ReverseProxy.Forwarder;
 using Yarp.ReverseProxy.Transforms;
 
@@ -20,10 +20,10 @@ builder.Services.AddHttpForwarderWithServiceDiscovery();
 // ChatClientAgent is built per chat-page instance (not here) so it can be given frontend tools
 // that close over page-scoped, JS-interop-backed services like GeolocationService.
 builder.Services.AddHttpClient<AGUIChatClient>()
-    .AddTypedClient<AGUIChatClient>((http, _) => new AGUIChatClient(http, "/ag-ui"));
+    .AddTypedClient<AGUIChatClient>((http, _) => new AGUIChatClient(new(http, "/ag-ui")));
+builder.Services.AddHttpClient<AgentConversationClient>();
 builder.Services.AddScoped<UserIdentityService>();
 builder.Services.AddScoped<GeolocationService>();
-builder.Services.AddScoped<ConversationStore>();
 
 var app = builder.Build();
 
@@ -65,6 +65,21 @@ app.MapForwarder("/ag-ui", agentUrl,
         {
             // Client shouldn't sent this header, this is a back/end server concern.
             // The user id can then come from cookie auth/back end.
+            ctx.ProxyRequest.Headers.Remove("x-agent-user-id");
+
+            var userId = ctx.HttpContext.User?.Identity?.Name ?? "anonymous";
+            ctx.ProxyRequest.Headers.TryAddWithoutValidation("x-agent-user-id", userId);
+            return ValueTask.CompletedTask;
+        });
+    });
+
+app.MapForwarder("/agent/{**catch-all}", agentUrl,
+    new ForwarderRequestConfig { ActivityTimeout = TimeSpan.FromMinutes(1) },
+    transformContext =>
+    {
+        transformContext.AddPathRemovePrefix("/agent");
+        transformContext.AddRequestTransform(ctx =>
+        {
             ctx.ProxyRequest.Headers.Remove("x-agent-user-id");
 
             var userId = ctx.HttpContext.User?.Identity?.Name ?? "anonymous";

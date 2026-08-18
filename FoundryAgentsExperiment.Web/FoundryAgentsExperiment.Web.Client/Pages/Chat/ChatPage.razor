@@ -1,13 +1,15 @@
 @page "/chat"
 @page "/chat/{ConversationId}"
 @rendermode InteractiveWebAssembly
+
+@using AGUI.Client
+@using FoundryAgentsExperiment.Shared.Models
 @using Microsoft.Agents.AI
-@using Microsoft.Agents.AI.AGUI
 @using Microsoft.Extensions.AI
+
 @inject AGUIChatClient ChatClient
 @inject GeolocationService Geolocation
-@inject ConversationStore ConversationStore
-@inject UserIdentityService UserIdentity
+@inject AgentConversationClient ConversationClient
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @implements IDisposable
@@ -16,7 +18,7 @@
 
 <div class="chat-page">
     <div class="chat-sidebar">
-        <ConversationList @ref="_conversationList"
+        <ConversationList Conversations="_conversations"
                           ActiveConversationId="@_conversationId"
                           OnSelected="@ResumeConversationAsync" />
     </div>
@@ -40,20 +42,21 @@
     [Parameter]
     public string? ConversationId { get; set; }
 
-    private string _conversationId = Guid.NewGuid().ToString(); // localStorage key + URL param
-    private string? _threadId;                                   // server-assigned Foundry thread ID
-    private ChatClientAgent? _agent;                              // built per page instance with frontend tools
-    private AgentSession? _session;                               // AG-UI session bound to _threadId
-    private bool _isFirstMessage = true;
+    private string? _conversationId;
+    private readonly AGUIContinuationState _continuation = new();
+    private ChatClientAgent? _agent;
+    private AgentSession? _session;
     private bool _isStreaming;
     private bool _focusInput;
+    private bool _hasConversationUrl;
+    private string? _loadedConversationId;
 
     private readonly List<ChatMessage> _displayMessages = [];
+    private IReadOnlyList<ConversationSummary> _conversations = [];
     private ChatMessage? _inProgressMessage;
     private CancellationTokenSource? _streamingCts;
 
     private ChatInput? _chatInput;
-    private ConversationList? _conversationList;
 
     protected override async Task OnInitializedAsync()
     {
@@ -72,16 +75,33 @@
         ];
 
         _agent = ChatClient.AsAIAgent(name: "agui-client", description: "AG-UI Client Agent", tools: frontendTools);
+        await RefreshConversationsAsync();
+    }
 
-        if (ConversationId is { Length: > 0 })
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!RendererInfo.IsInteractive || ConversationId == _loadedConversationId)
+            return;
+
+        _loadedConversationId = ConversationId;
+        _hasConversationUrl = ConversationId is { Length: > 0 };
+        if (ConversationId is not { Length: > 0 } conversationId)
+            return;
+
+        CancelStreaming();
+        _conversationId = conversationId;
+        _session = null;
+        _inProgressMessage = null;
+        _displayMessages.Clear();
+
+        var conversation = await ConversationClient.GetConversationAsync(conversationId);
+        _continuation.Restore(conversation.ConversationId, conversation.LastRunId);
+
+        foreach (var message in conversation.Messages)
         {
-            // Resume: load the stored ThreadId so Foundry can replay its server-side history
-            _conversationId = ConversationId;
-            _isFirstMessage = false;
-            var all = await ConversationStore.GetAllAsync();
-            _threadId = all.FirstOrDefault(c => c.Id == ConversationId)?.ThreadId;
+            if (IsDisplayableMessage(message))
+                _displayMessages.Add(message);
         }
-        // else: new conversation with fresh GUID already set
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -101,44 +121,25 @@
         CancelStreaming();
 
         // Add to display list immediately
-        var userMessage = new ChatMessage(ChatRole.User, userText);
+        var userMessage = new ChatMessage(ChatRole.User, userText)
+        {
+            MessageId = Guid.NewGuid().ToString("N"),
+        };
         _displayMessages.Add(userMessage);
 
-        // Persist conversation on first message
-        if (_isFirstMessage)
+        // The server loads its own Cosmos-managed transcript; send only the fresh turn.
+        if (_continuation.ThreadId is null)
         {
-            _isFirstMessage = false;
-            var title = userText.Length > 60 ? userText[..60] + "…" : userText;
-            var summary = new ConversationSummary
-            {
-                Id = _conversationId,
-                Title = title
-            };
-            await ConversationStore.SaveAsync(summary);
-            await _conversationList!.RefreshAsync();
-            await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/chat/{_conversationId}");
+            _conversationId = Guid.NewGuid().ToString("N");
+            _continuation.InitializeThread(_conversationId);
         }
-        else
-        {
-            var all = await ConversationStore.GetAllAsync();
-            var existing = all.FirstOrDefault(c => c.Id == _conversationId);
-            if (existing is not null)
-            {
-                existing.LastMessageAt = DateTimeOffset.UtcNow;
-                await ConversationStore.SaveAsync(existing);
-            }
-        }
-
-        // Fresh system prompt injected every turn; Foundry maintains history server-side.
-        var systemPrompt = $"""
-            You are providing general assistance to a user planning their day.
-            If the user asks for their location or where they are or similar, call the get_user_location tool to retrieve it.
-            """;
 
         var responseText = new TextContent(string.Empty);
         _inProgressMessage = new ChatMessage(ChatRole.Assistant, [responseText]);
         _isStreaming = true;
-        _streamingCts = new CancellationTokenSource();
+        var inProgressMessage = _inProgressMessage;
+        var streamingCts = new CancellationTokenSource();
+        _streamingCts = streamingCts;
 
         // Render the assistant bubble + typing indicator immediately - otherwise nothing shows
         // until the first network round-trip (session creation, then the first streamed chunk)
@@ -147,35 +148,22 @@
 
         try
         {
-            // Reuse the session across turns of the same conversation; create it (resuming the
-            // stored thread id, if any) the first time this page instance sends a message.
-            _session ??= _threadId is { Length: > 0 }
-                ? await _agent!.CreateSessionAsync(_threadId, _streamingCts.Token)
-                : await _agent!.CreateSessionAsync(_streamingCts.Token);
+            _session ??= await _agent!.CreateSessionAsync(streamingCts.Token);
 
             List<ChatMessage> messages =
             [
-                new(ChatRole.System, systemPrompt),
-                new(ChatRole.User, userText)
+                userMessage
             ];
 
-            await foreach (var update in _agent!.RunStreamingAsync(messages, _session, cancellationToken: _streamingCts.Token))
+            await foreach (var update in _agent!.RunStreamingAsync(messages, _session, _continuation.CreateRunOptions(), streamingCts.Token))
             {
-                if (_threadId is null or { Length: 0 })
+                _continuation.Observe(update);
+
+                if (!_hasConversationUrl && _continuation.ThreadId is { Length: > 0 } threadId)
                 {
-                    var conversationId = update.AsChatResponseUpdate().ConversationId;
-                    if (conversationId is { Length: > 0 })
-                    {
-                        _threadId = conversationId;
-                        // Persist the server thread ID so resume can pass it back to Foundry
-                        var all = await ConversationStore.GetAllAsync();
-                        var existing = all.FirstOrDefault(c => c.Id == _conversationId);
-                        if (existing is not null)
-                        {
-                            existing.ThreadId = conversationId;
-                            await ConversationStore.SaveAsync(existing);
-                        }
-                    }
+                    _conversationId = threadId;
+                    _hasConversationUrl = true;
+                    await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/chat/{threadId}");
                 }
 
                 foreach (var content in update.Contents)
@@ -184,7 +172,7 @@
                     {
                         case TextContent text:
                             responseText.Text += text.Text;
-                            ChatMessageItem.NotifyChanged(_inProgressMessage);
+                            ChatMessageItem.NotifyChanged(inProgressMessage);
                             break;
                         case FunctionCallContent call:
                             _displayMessages.Add(new ChatMessage(ChatRole.Tool, $"🔧 Calling {call.Name}…"));
@@ -204,21 +192,35 @@
         }
         finally
         {
-            _displayMessages.Add(_inProgressMessage!);
-            _inProgressMessage = null;
-            _isStreaming = false;
-            _focusInput = true;
-            await InvokeAsync(StateHasChanged);
+            if (ReferenceEquals(_streamingCts, streamingCts))
+            {
+                _displayMessages.Add(inProgressMessage);
+                _inProgressMessage = null;
+                _isStreaming = false;
+                _streamingCts = null;
+                _focusInput = true;
+
+                if (_conversationId is { Length: > 0 } conversationId &&
+                    _continuation.PreviousRunId is { Length: > 0 } runId)
+                {
+                    await ConversationClient.UpdateContinuationAsync(conversationId, runId, userMessage.Text);
+                    await RefreshConversationsAsync();
+                }
+
+                await InvokeAsync(StateHasChanged);
+            }
+
+            streamingCts.Dispose();
         }
     }
 
     private void StartNewConversation()
     {
         CancelStreaming();
-        _conversationId = Guid.NewGuid().ToString();
-        _threadId = null;
+        _conversationId = null;
+        _continuation.Reset();
+        _hasConversationUrl = false;
         _session = null;
-        _isFirstMessage = true;
         _displayMessages.Clear();
         _inProgressMessage = null;
         Nav.NavigateTo("/chat");
@@ -228,14 +230,25 @@
     {
         CancelStreaming();
         _conversationId = conversation.Id;
-        _threadId = conversation.ThreadId;
         _session = null;
-        _isFirstMessage = false;
         _displayMessages.Clear();
         _inProgressMessage = null;
         Nav.NavigateTo($"/chat/{conversation.Id}");
         await InvokeAsync(StateHasChanged);
     }
+
+    private static bool IsDisplayableMessage(ChatMessage message) =>
+        (message.Role.Value == "user" || message.Role.Value == "assistant" || message.Role.Value == "tool") &&
+        message.Contents.Any(content => content switch
+        {
+            TextContent { Text.Length: > 0 } => true,
+            FunctionCallContent => true,
+            FunctionResultContent => true,
+            _ => false,
+        });
+
+    private async Task RefreshConversationsAsync() =>
+        _conversations = await ConversationClient.GetConversationsAsync();
 
     private void CancelStreaming()
     {

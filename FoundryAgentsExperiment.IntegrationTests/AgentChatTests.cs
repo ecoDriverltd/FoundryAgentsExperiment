@@ -5,11 +5,14 @@ using Aspire.Hosting.Testing;
 using Azure.AI.Projects;
 using Azure.Core;
 using Azure.Identity;
+using FoundryAgentsExperiment.Shared.Models;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Net.Http.Json;
 using Xunit;
 
 namespace FoundryAgentsExperiment.IntegrationTests;
@@ -42,6 +45,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     // elsewhere in this class.
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(2);
     private AIProjectClient? projectClient;
+
+    private sealed record CreatedConversation(HttpClient Http, string ThreadId, string RunId, string Prompt);
 
     public async ValueTask InitializeAsync()
     {
@@ -137,6 +142,52 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             .AsAIAgent(name: "agui-client", description: "AG-UI Client Agent");
     }
 
+    private HttpClient CreateAgentHttpClient(string userId)
+    {
+        var http = app!.CreateHttpClient("agent-dotnet");
+        http.DefaultRequestHeaders.Add("x-agent-user-id", userId);
+        return http;
+    }
+
+    private async Task<CreatedConversation> CreateConversationAsync(string userId, CancellationToken cancellationToken)
+    {
+        var agent = CreateAGUIAgent(userId);
+        var session = await agent.CreateSessionAsync(cancellationToken);
+        var continuation = new AGUIContinuationState();
+        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+        var prompt = $"Conversation endpoint integration test {Guid.NewGuid():N}.";
+        List<ChatMessage> messages = [CreateUserMessage(prompt)];
+
+        await foreach (var update in agent.RunStreamingAsync(messages, session, continuation.CreateRunOptions(), cancellationToken))
+        {
+            continuation.Observe(update);
+        }
+
+        if (continuation.ThreadId is not { Length: > 0 } threadId ||
+            continuation.PreviousRunId is not { Length: > 0 } runId)
+        {
+            throw new InvalidOperationException("The AG-UI run did not return continuation state.");
+        }
+
+        var http = CreateAgentHttpClient(userId);
+        List<ConversationSummary> lastConversations = [];
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var conversations = await http.GetFromJsonAsync<List<ConversationSummary>>("/conversations", cancellationToken) ?? [];
+            lastConversations = conversations;
+            if (conversations.Any(conversation => conversation.Id == threadId))
+            {
+                return new CreatedConversation(http, threadId, runId, prompt);
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+        }
+
+        http.Dispose();
+        output.WriteLine($"Expected AG-UI thread '{threadId}'; observed index IDs: {string.Join(", ", lastConversations.Select(conversation => conversation.Id))}");
+        throw new InvalidOperationException($"Conversation index did not contain AG-UI thread '{threadId}' after the run completed. Observed index IDs: {string.Join(", ", lastConversations.Select(conversation => conversation.Id))}");
+    }
+
     private async Task<AIProjectClient> CreateProjectClientAsync()
     {
         var endPoint = await app!.GetConnectionStringAsync("agent-test-sw") ?? throw new InvalidOperationException("No connection string to foundry");
@@ -146,11 +197,157 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         return this.projectClient;
     }
 
+    [Fact]
+    public async Task AGUIHistoryDiagnosticsCaptureTwoTurnToolConversation()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var agent = CreateAGUIAgent(userId);
+        var session = await agent.CreateSessionAsync(ct);
+        var continuation = new AGUIContinuationState();
+        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+
+        await foreach (var update in agent.RunStreamingAsync(
+            [CreateUserMessage("Good evening.")],
+            session,
+            continuation.CreateRunOptions(),
+            ct))
+        {
+            continuation.Observe(update);
+        }
+
+        await foreach (var update in agent.RunStreamingAsync(
+            [CreateUserMessage("Use your silly-math skill to calculate 6 * 7.")],
+            session,
+            continuation.CreateRunOptions(),
+            ct))
+        {
+            continuation.Observe(update);
+        }
+
+        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId));
+
+        using var http = CreateAgentHttpClient(userId);
+        var conversation = await http.GetFromJsonAsync<ConversationDetail>(
+            $"/conversations/{Uri.EscapeDataString(continuation.ThreadId!)}",
+            ct);
+
+        Assert.NotNull(conversation);
+        Assert.Contains(conversation.Messages, message => message.Text.Contains("Good evening", StringComparison.Ordinal));
+        Assert.Contains(conversation.Messages, message => message.Text.Contains("6 * 7", StringComparison.Ordinal));
+        Assert.DoesNotContain(conversation.Messages, message => message.Text.StartsWith("## Memories", StringComparison.Ordinal));
+        Assert.DoesNotContain(conversation.Messages, message => message.Role == ChatRole.Assistant &&
+            string.IsNullOrWhiteSpace(message.Text) &&
+            !message.Contents.Any(content => content is FunctionCallContent or FunctionResultContent));
+        Assert.Equal(1, conversation.Messages.Count(message => message.Text == "Good evening."));
+        var skillPromptMessages = conversation.Messages
+            .Where(message => message.Text.Contains("6 * 7", StringComparison.Ordinal))
+            .ToList();
+        Assert.True(skillPromptMessages.Count == 1,
+            $"Expected one persisted skill prompt but found {skillPromptMessages.Count}: {string.Join(", ", skillPromptMessages.Select(message => message.MessageId ?? "<null>"))}");
+        Assert.Contains(conversation.Messages, message =>
+            message.Role == ChatRole.Assistant &&
+            message.Contents.Any(content => content is FunctionCallContent));
+    }
+
+    [Fact]
+    public async Task AGUIPreservesClientAssignedUserMessageIdThroughToolLoop()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var agent = CreateAGUIAgent(userId);
+        var session = await agent.CreateSessionAsync(ct);
+        var continuation = new AGUIContinuationState();
+        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+        var messageId = "client-" + Guid.NewGuid().ToString("N");
+        var prompt = "Use your silly-math skill to calculate 6 * 7.";
+
+        await foreach (var update in agent.RunStreamingAsync(
+            [new ChatMessage(ChatRole.User, prompt) { MessageId = messageId }],
+            session,
+            continuation.CreateRunOptions(),
+            ct))
+        {
+            continuation.Observe(update);
+        }
+
+        using var http = CreateAgentHttpClient(userId);
+        var conversation = await http.GetFromJsonAsync<ConversationDetail>(
+            $"/conversations/{Uri.EscapeDataString(continuation.ThreadId!)}",
+            ct);
+
+        Assert.NotNull(conversation);
+        var recalledUserMessage = Assert.Single(conversation.Messages, message => message.Text == prompt);
+        Assert.Equal(messageId, recalledUserMessage.MessageId);
+    }
+
+    [Fact]
+    public async Task ConversationListPersistsAGUIRunContinuation()
+    {
+        var created = await CreateConversationAsync(
+            "test-" + Guid.NewGuid().ToString("N"),
+            TestContext.Current.CancellationToken);
+        using var http = created.Http;
+
+        using var updateResponse = await http.PutAsJsonAsync(
+            $"/conversations/{Uri.EscapeDataString(created.ThreadId)}/continuation",
+            new { runId = created.RunId, initialUserPrompt = created.Prompt },
+            TestContext.Current.CancellationToken);
+        updateResponse.EnsureSuccessStatusCode();
+
+        var conversations = await http.GetFromJsonAsync<List<ConversationSummary>>(
+            "/conversations",
+            TestContext.Current.CancellationToken);
+        var conversation = Assert.Single(conversations!, item => item.Id == created.ThreadId);
+
+        Assert.Equal(created.RunId, conversation.LastRunId);
+        Assert.StartsWith("Conversation endpoint integration test", conversation.Title, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ConversationResumeReturnsTranscriptAndEnforcesOwnership()
+    {
+        var created = await CreateConversationAsync(
+            "test-" + Guid.NewGuid().ToString("N"),
+            TestContext.Current.CancellationToken);
+        using var ownerHttp = created.Http;
+
+        using var updateResponse = await ownerHttp.PutAsJsonAsync(
+            $"/conversations/{Uri.EscapeDataString(created.ThreadId)}/continuation",
+            new { runId = created.RunId, initialUserPrompt = created.Prompt },
+            TestContext.Current.CancellationToken);
+        updateResponse.EnsureSuccessStatusCode();
+
+        var conversation = await ownerHttp.GetFromJsonAsync<ConversationDetail>(
+            $"/conversations/{Uri.EscapeDataString(created.ThreadId)}",
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(conversation);
+        Assert.Equal(created.ThreadId, conversation.ConversationId);
+        Assert.Equal(created.RunId, conversation.LastRunId);
+        Assert.Contains(conversation.Messages,
+            message => message.Role == ChatRole.User &&
+                       message.Text?.Contains(created.Prompt, StringComparison.Ordinal) == true);
+
+        using var otherUserHttp = CreateAgentHttpClient("test-" + Guid.NewGuid().ToString("N"));
+        using var otherUserResponse = await otherUserHttp.GetAsync(
+            $"/conversations/{Uri.EscapeDataString(created.ThreadId)}",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NotFound, otherUserResponse.StatusCode);
+    }
+
     internal static TokenCredential GetCredential() =>
              new ChainedTokenCredential(
                 new VisualStudioCredential(),
                 new VisualStudioCodeCredential(),
                 new DefaultAzureCredential());
+
+    private static ChatMessage CreateUserMessage(string text) =>
+        new(ChatRole.User, text)
+        {
+            MessageId = Guid.NewGuid().ToString("N"),
+        };
 
     [Fact]
     public async Task AGUIAgentRecallsFact1()
@@ -166,25 +363,17 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             new(ChatRole.System, "You are a helpful assistant.")
         ];
 
-        bool isFirstUpdate = true;
-        string? threadId = null;
+        var continuation = new AGUIContinuationState();
 
-        messages.Add(new ChatMessage(ChatRole.User, "My favourite colour is BLUE42. This is important, remember it."));
+        messages.Add(CreateUserMessage("My favourite colour is BLUE42. This is important, remember it."));
 
         string response1 = string.Empty;
         string errorMessage = string.Empty;
 
         // Stream the response.
-        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, cancellationToken: ct))
+        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, continuation.CreateRunOptions(), ct))
         {
-            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdateWithConversationId();
-
-            // First update indicates run started
-            if (isFirstUpdate)
-            {
-                threadId = chatUpdate.ConversationId;
-                isFirstUpdate = false;
-            }
+            continuation.Observe(update);
 
             // Display streaming text content
             foreach (AIContent content in update.Contents)
@@ -200,24 +389,17 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             }
         }
 
-        Assert.False(string.IsNullOrWhiteSpace(threadId), "No thread ID returned from turn 1.");
+        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId), "No thread ID returned from turn 1.");
+        Assert.False(string.IsNullOrWhiteSpace(continuation.PreviousRunId), "No run ID returned from turn 1.");
 
-        messages = [new ChatMessage(ChatRole.User, "What is my favourite colour?")];
-        AgentSession session2 = await agent.CreateSessionAsync(threadId, ct);
+        messages = [CreateUserMessage("What is my favourite colour?")];
         string response2 = string.Empty;
         string errorMessage2 = string.Empty;
 
         // Stream the response.
-        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session2, cancellationToken: ct))
+        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, continuation.CreateRunOptions(), ct))
         {
-            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdateWithConversationId();
-
-            // First update indicates run started
-            if (isFirstUpdate)
-            {
-                threadId = chatUpdate.ConversationId;
-                isFirstUpdate = false;
-            }
+            continuation.Observe(update);
 
             // Display streaming text content
             foreach (AIContent content in update.Contents)
@@ -264,7 +446,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.True(foundMemory, "Memory not found in memory store after retries.");
 
         AgentSession session3 = await agent.CreateSessionAsync(ct);
-        messages = [new ChatMessage(ChatRole.User, "Do you remember my favourite colour?")];
+        messages = [CreateUserMessage("Do you remember my favourite colour?")];
 
         string response3 = string.Empty;
         string errorMessage3 = string.Empty;
@@ -272,15 +454,6 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         // Stream the response.
         await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session3, cancellationToken: ct))
         {
-            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
-
-            // First update indicates run started
-            if (isFirstUpdate)
-            {
-                threadId = chatUpdate.ConversationId;
-                isFirstUpdate = false;
-            }
-
             // Display streaming text content
             foreach (AIContent content in update.Contents)
             {
@@ -314,25 +487,17 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             new(ChatRole.System, "You are a helpful assistant.")
         ];
 
-        bool isFirstUpdate = true;
-        string? threadId = null;
+        var continuation = new AGUIContinuationState();
 
-        messages.Add(new ChatMessage(ChatRole.User, "Use your silly-math skill to calculate 6 * 7."));
+        messages.Add(CreateUserMessage("Use your silly-math skill to calculate 6 * 7."));
 
         string response1 = string.Empty;
         string errorMessage = string.Empty;
 
         // Stream the response.
-        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, cancellationToken: ct))
+        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session, continuation.CreateRunOptions(), ct))
         {
-            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
-
-            // First update indicates run started
-            if (isFirstUpdate)
-            {
-                threadId = chatUpdate.ConversationId;
-                isFirstUpdate = false;
-            }
+            continuation.Observe(update);
 
             // Display streaming text content
             foreach (AIContent content in update.Contents)
@@ -349,5 +514,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         }
 
         Assert.Contains("42", response1, StringComparison.OrdinalIgnoreCase);
+        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId), "No thread ID returned from the skill run.");
+        Assert.False(string.IsNullOrWhiteSpace(continuation.PreviousRunId), "No run ID returned from the skill run.");
     }
 }

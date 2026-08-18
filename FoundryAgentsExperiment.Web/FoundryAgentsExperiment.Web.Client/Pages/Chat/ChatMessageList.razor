@@ -2,7 +2,7 @@
 
 <div class="message-list-container" @ref="_container">
     <div class="message-list">
-        @foreach (var message in Messages.Where(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant || m.Role == ChatRole.Tool))
+        @foreach (var message in Messages.Where(IsDisplayableMessage))
         {
             <ChatMessageItem @key="@message" Message="@message" />
         }
@@ -14,7 +14,7 @@
                 <span></span><span></span><span></span>
             </div>
         }
-        else if (!Messages.Any(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant || m.Role == ChatRole.Tool))
+        else if (!Messages.Any(IsDisplayableMessage))
         {
             <div class="no-messages">
                 @NoMessagesContent
@@ -34,6 +34,16 @@
 
     [Parameter]
     public RenderFragment? NoMessagesContent { get; set; }
+
+    private static bool IsDisplayableMessage(ChatMessage message) =>
+        (message.Role.Value == "user" || message.Role.Value == "assistant" || message.Role.Value == "tool") &&
+        message.Contents.Any(content => content switch
+        {
+            TextContent { Text.Length: > 0 } => true,
+            FunctionCallContent => true,
+            FunctionResultContent => true,
+            _ => false,
+        });
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

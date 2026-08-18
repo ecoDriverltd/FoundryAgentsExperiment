@@ -9,9 +9,9 @@ namespace FoundryAgentsExperiment.Agent.AgentExtensions;
 /// overwritten by another. Reads the same <c>x-agent-user-id</c> header convention used elsewhere in
 /// this app (see <see cref="AgentUserId"/>).
 /// </summary>
-public sealed class AgentUserIdSessionIsolationKeyProvider(IHttpContextAccessor httpContextAccessor)
-    : SessionIsolationKeyProvider
+public sealed class AgentUserIdIsolationKeyProvider(IHttpContextAccessor httpContextAccessor)
+    : AgentIsolationKeyProvider
 {
-    public override ValueTask<string?> GetSessionIsolationKeyAsync(CancellationToken cancellationToken = default)
+    public override ValueTask<string?> GetIsolationKeyAsync(CancellationToken cancellationToken = default)
         => ValueTask.FromResult<string?>(httpContextAccessor.GetAgentUserId());
 }

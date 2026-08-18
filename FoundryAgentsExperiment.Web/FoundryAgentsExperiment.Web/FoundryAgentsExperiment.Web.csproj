@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -10,8 +10,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\FoundryAgentsExperiment.ServiceDefaults\FoundryAgentsExperiment.ServiceDefaults.csproj" />
     <ProjectReference Include="..\FoundryAgentsExperiment.Web.Client\FoundryAgentsExperiment.Web.Client.csproj" />    
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.10" />
-    <PackageReference Include="Microsoft.Extensions.ServiceDiscovery.Yarp" Version="10.8.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.ServiceDiscovery.Yarp" Version="10.9.0" />
   </ItemGroup>
 
 </Project>
