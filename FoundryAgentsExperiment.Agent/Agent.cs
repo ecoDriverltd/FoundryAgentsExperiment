@@ -2,7 +2,6 @@
 using Azure.Core;
 using FoundryAgentsExperiment.Agent;
 using FoundryAgentsExperiment.Agent.AgentExtensions;
-using FoundryAgentsExperiment.Shared.Models;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Compaction;
 using Microsoft.Agents.AI.Foundry.Hosting;
@@ -62,13 +61,6 @@ var messagePersistenceTracker = new ChatMessagePersistenceTracker();
 builder.Services.AddSingleton<IHttpContextAccessor>(httpContextAccessor);
 builder.Services.AddSingleton(messagePersistenceTracker);
 
-// NOTE: Microsoft.Agents.AI.Foundry.Hosting.InMemoryAgentSessionStore implements a DIFFERENT
-// AgentSessionStore contract (Foundry-specific, used by MapFoundryResponses/MapOpenAIConversations)
-// than the one MapAGUI resolves (Microsoft.Agents.AI.Hosting.AgentSessionStore). Registering that
-// type here was silently ignored by MapAGUI - use the AG-UI-compatible store instead.
-
-// CosmosChatHistoryProvider owns the durable transcript. The AG-UI session store persists small
-// serialized session state and updates the lightweight conversation index.
 builder.Services.AddCosmosAgentSessionStore(agentName);
 
 // Registering this lets MapAGUIServer auto-wrap the AgentSessionStore in an
