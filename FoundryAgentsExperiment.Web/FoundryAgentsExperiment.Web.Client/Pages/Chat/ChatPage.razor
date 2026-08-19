@@ -20,6 +20,9 @@
     <div class="chat-sidebar">
         <ConversationList Conversations="_conversations"
                           ActiveConversationId="@_conversationId"
+                          IsLoading="@_isLoadingConversations"
+                          IsLoadingConversation="@_isLoadingConversation"
+                          ShowNewConversationPlaceholder="@(!_hasConversationUrl)"
                           OnSelected="@ResumeConversationAsync" />
     </div>
 
@@ -28,12 +31,16 @@
 
         <ChatMessageList Messages="@_displayMessages" InProgressMessage="@_inProgressMessage">
             <NoMessagesContent>
-                <p>Start a conversation.</p>
+                <p>@(_isLoadingConversation ? "Loading conversation…" : "Start a conversation.")</p>
             </NoMessagesContent>
         </ChatMessageList>
 
         <div class="chat-input-area">
-            <ChatInput @ref="_chatInput" OnSend="@SendMessageAsync" Disabled="@_isStreaming" />
+            <ChatInput @ref="_chatInput"
+                       OnSend="@SendMessageAsync"
+                       OnStop="@CancelStreaming"
+                       IsStreaming="@_isStreaming"
+                       Disabled="@_isLoadingConversation" />
         </div>
     </div>
 </div>
@@ -47,6 +54,8 @@
     private ChatClientAgent? _agent;
     private AgentSession? _session;
     private bool _isStreaming;
+    private bool _isLoadingConversations = true;
+    private bool _isLoadingConversation;
     private bool _focusInput;
     private bool _hasConversationUrl;
     private string? _loadedConversationId;
@@ -98,6 +107,7 @@
             return;
 
         CancelStreaming();
+        _isLoadingConversation = true;
         _conversationId = conversationId;
         _session = null;
         _inProgressMessage = null;
@@ -105,11 +115,19 @@
         _functionCallNames.Clear();
         _hideFollowingAssistantResponse = false;
 
-        var conversation = await ConversationClient.GetConversationAsync(conversationId);
-        _continuation.Restore(conversation.ConversationId, conversation.LastRunId);
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+            var conversation = await ConversationClient.GetConversationAsync(conversationId);
+            _continuation.Restore(conversation.ConversationId, conversation.LastRunId);
 
-        foreach (var message in conversation.Messages)
-            AddDisplayMessage(message);
+            foreach (var message in conversation.Messages)
+                AddDisplayMessage(message);
+        }
+        finally
+        {
+            _isLoadingConversation = false;
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -250,6 +268,7 @@
         _functionCallNames.Clear();
         _hideFollowingAssistantResponse = false;
         _inProgressMessage = null;
+        _isLoadingConversation = true;
         Nav.NavigateTo($"/chat/{conversation.Id}");
         await InvokeAsync(StateHasChanged);
     }
@@ -289,7 +308,21 @@
     }
 
     private async Task RefreshConversationsAsync() =>
-        _conversations = await ConversationClient.GetConversationsAsync();
+        await LoadConversationsAsync();
+
+    private async Task LoadConversationsAsync()
+    {
+        _isLoadingConversations = true;
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+            _conversations = await ConversationClient.GetConversationsAsync();
+        }
+        finally
+        {
+            _isLoadingConversations = false;
+        }
+    }
 
     private void CancelStreaming()
     {

@@ -1,0 +1,77 @@
+.user-message {
+    align-self: flex-end;
+    background: #0d6efd;
+    color: #fff;
+    padding: 0.6rem 1rem;
+    border-radius: 18px 18px 4px 18px;
+    max-width: 70%;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.assistant-message {
+    display: flex;
+    gap: 0.6rem;
+    align-self: flex-start;
+    max-width: 80%;
+}
+
+.assistant-message-icon {
+    flex-shrink: 0;
+    width: 2rem;
+    height: 2rem;
+    background: #6c757d;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+}
+
+.assistant-message-icon svg {
+    width: 1.1rem;
+    height: 1.1rem;
+}
+
+.assistant-message-body {
+    background: #f1f3f5;
+    border-radius: 4px 18px 18px 18px;
+    padding: 0.6rem 1rem;
+}
+
+.assistant-message-header {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #6c757d;
+    margin-bottom: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.assistant-message-text {
+    font-size: 0.95rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.assistant-message-text code {
+    background: #e9ecef;
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-size: 0.875em;
+}
+
+.tool-message {
+    align-self: flex-start;
+    background: #fff3cd;
+    color: #664d03;
+    border: 1px solid #ffe69c;
+    padding: 0.4rem 0.8rem;
+    border-radius: 12px;
+    max-width: 80%;
+    font-size: 0.85rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}

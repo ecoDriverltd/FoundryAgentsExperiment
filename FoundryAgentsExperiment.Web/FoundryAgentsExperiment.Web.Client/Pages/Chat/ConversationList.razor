@@ -1,19 +1,33 @@
 <div class="conversation-list">
     <div class="conversation-list-header">Conversations</div>
 
-    @if (Conversations.Count == 0)
+    @if (IsLoading)
     {
-        <div class="conversation-list-empty">No previous conversations</div>
+        <div class="conversation-list-loading">Loading conversations…</div>
     }
     else
     {
+        @if (ShowNewConversationPlaceholder)
+        {
+            <div class="conversation-item active">
+                <div class="conversation-title">New conversation</div>
+                <div class="conversation-date">just now</div>
+            </div>
+        }
+
+        @if (Conversations.Count == 0 && !ShowNewConversationPlaceholder)
+        {
+            <div class="conversation-list-empty">No previous conversations</div>
+        }
+
         @foreach (var conversation in Conversations)
         {
             var itemClass = conversation.Id == ActiveConversationId
                 ? "conversation-item active"
                 : "conversation-item";
             <div class="@itemClass"
-                 @onclick="@(() => OnSelected.InvokeAsync(conversation))">
+                 @onclick="@(() => OnSelected.InvokeAsync(conversation))"
+                 aria-busy="@(IsLoadingConversation && conversation.Id == ActiveConversationId)">
                 <div class="conversation-title">@conversation.Title</div>
                 <div class="conversation-date">@FormatDate(conversation.LastUpdatedAt)</div>
             </div>
@@ -30,6 +44,15 @@
 
     [Parameter]
     public EventCallback<ConversationSummary> OnSelected { get; set; }
+
+    [Parameter]
+    public bool IsLoading { get; set; }
+
+    [Parameter]
+    public bool IsLoadingConversation { get; set; }
+
+    [Parameter]
+    public bool ShowNewConversationPlaceholder { get; set; }
 
     private static string FormatDate(DateTimeOffset date)
     {
