@@ -6,7 +6,7 @@
         @Message.Text
     </div>
 }
-else if (Message.Role == ChatRole.Assistant && !HasFunctionCall)
+else if (Message.Role == ChatRole.Assistant && !HasToolContent)
 {
     <div class="assistant-message">
         <div class="assistant-message-icon">
@@ -20,7 +20,7 @@ else if (Message.Role == ChatRole.Assistant && !HasFunctionCall)
         </div>
     </div>
 }
-else if (Message.Role == ChatRole.Tool || HasFunctionCall)
+else if (Message.Role == ChatRole.Tool || HasToolContent)
 {
     <div class="tool-message">
         @foreach (var content in Message.Contents)
@@ -52,7 +52,8 @@ else if (Message.Role == ChatRole.Tool || HasFunctionCall)
 
     private string MessageText => string.Concat(Message.Contents.OfType<TextContent>().Select(content => content.Text));
 
-    private bool HasFunctionCall => Message.Contents.Any(content => content is FunctionCallContent);
+    private bool HasToolContent => Message.Contents.Any(content =>
+        content is FunctionCallContent or FunctionResultContent);
 
     protected override void OnInitialized()
     {

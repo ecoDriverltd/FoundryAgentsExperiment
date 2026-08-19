@@ -31,6 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
+	<ProjectReference Include="..\FoundryAgentsExperiment.Agent\FoundryAgentsExperiment.Agent.csproj" />
 	<ProjectReference Include="..\FoundryAgentsExperiment.Shared\FoundryAgentsExperiment.Shared.csproj" />
 	<ProjectReference Include="..\FoundryAgentsExperiment.AppHost\FoundryAgentsExperiment.AppHost.csproj" />
   </ItemGroup>

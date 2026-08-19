@@ -1,5 +1,6 @@
 ﻿using Azure.AI.Projects;
 using Microsoft.Agents.AI.Foundry;
+using Microsoft.Extensions.AI;
 
 namespace FoundryAgentsExperiment.Agent.AgentExtensions;
 
@@ -25,7 +26,10 @@ public static class MemoryProvider
                 projectClient,
                 options: new FoundryMemoryProviderOptions
                 {
-                    EnableSensitiveTelemetryData = true
+                    EnableSensitiveTelemetryData = true,
+                    SearchInputMessageFilter = FilterSearchInputMessages,
+                    StorageInputRequestMessageFilter = FilterConversationMessages,
+                    StorageInputResponseMessageFilter = FilterConversationMessages
                 },
                 memoryStoreName: $"{agentName}-memory",
                 stateInitializer: _ => new FoundryMemoryProvider.State(
@@ -40,4 +44,18 @@ public static class MemoryProvider
             return memoryProvider;
         }
     }
+
+    public static IEnumerable<ChatMessage> FilterSearchInputMessages(IEnumerable<ChatMessage> messages) =>
+        messages.Where(message =>
+            message.Role == ChatRole.User &&
+            IsPlainTextMessage(message));
+
+    public static IEnumerable<ChatMessage> FilterConversationMessages(IEnumerable<ChatMessage> messages) =>
+        messages.Where(message =>
+            (message.Role == ChatRole.User || message.Role == ChatRole.Assistant) &&
+            IsPlainTextMessage(message));
+
+    private static bool IsPlainTextMessage(ChatMessage message) =>
+        message.Contents.All(content => content is TextContent) &&
+        !string.IsNullOrWhiteSpace(message.Text);
 }

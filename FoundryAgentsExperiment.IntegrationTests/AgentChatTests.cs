@@ -5,6 +5,7 @@ using Aspire.Hosting.Testing;
 using Azure.AI.Projects;
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.Azure.Cosmos;
 using FoundryAgentsExperiment.Shared.Models;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
@@ -34,6 +35,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     private readonly ITestOutputHelper output = output;
 
     private CancellationTokenSource? resourceLogCts;
+    private readonly HashSet<string> testUserIds = [];
+    private string? cosmosConnectionString;
 
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
@@ -98,6 +101,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         await this.app.StartAsync(cancellationToken).WaitAsync(StartupTimeout, cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-test-sw", cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-dotnet", cancellationToken);
+        this.cosmosConnectionString = await this.app.GetConnectionStringAsync("cosmos")
+            ?? throw new InvalidOperationException("No Cosmos connection string is available for integration-test cleanup.");
 
         // Stream the agent-dotnet resource's console logs (our [Wire]/[SessionStore] Checkpoint 1/2
         // logging) into the xUnit test output, since the Aspire dashboard doesn't surface them here.
@@ -130,24 +135,98 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         {
             await app.DisposeAsync();
         }
+
+        using var cleanupCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await DeleteTestDataAsync(cleanupCts.Token);
     }
 
     // Agent talking through AG-UI interface on foundry agent. Not clear if this can use conversations via openAI?
-    private ChatClientAgent CreateAGUIAgent(string userId)
+    private ChatClientAgent CreateAGUIAgent(string userId, IList<AITool>? tools = null)
     {
+        TrackTestUser(userId);
         var http = app!.CreateHttpClient("agent-dotnet");
         http.DefaultRequestHeaders.Add("x-agent-user-id", userId);
 
         return new AGUIChatClient(new AGUIChatClientOptions(http, "/ag-ui"))
-            .AsAIAgent(name: "agui-client", description: "AG-UI Client Agent");
+            .AsAIAgent(name: "agui-client", description: "AG-UI Client Agent", tools: tools);
     }
 
     private HttpClient CreateAgentHttpClient(string userId)
     {
+        TrackTestUser(userId);
         var http = app!.CreateHttpClient("agent-dotnet");
         http.DefaultRequestHeaders.Add("x-agent-user-id", userId);
         return http;
     }
+
+    private void TrackTestUser(string userId)
+    {
+        if (!userId.StartsWith("test-", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Integration-test cleanup only supports generated test user IDs.");
+        }
+
+        testUserIds.Add(userId);
+    }
+
+    private async Task DeleteTestDataAsync(CancellationToken cancellationToken)
+    {
+        if (testUserIds.Count == 0 || cosmosConnectionString is null)
+        {
+            return;
+        }
+
+        using var cosmosClient = new CosmosClient(cosmosConnectionString, GetCredential());
+        var database = cosmosClient.GetDatabase("agent-history");
+
+        foreach (var userId in testUserIds)
+        {
+            await DeleteChatHistoryAsync(database.GetContainer("chat-history"), userId, cancellationToken);
+            await DeleteUserPartitionAsync(database.GetContainer("agent-sessions"), userId, cancellationToken);
+            await DeleteUserPartitionAsync(database.GetContainer("conversation-index"), userId, cancellationToken);
+        }
+    }
+
+    private static async Task DeleteChatHistoryAsync(
+        Container container,
+        string userId,
+        CancellationToken cancellationToken)
+    {
+        var query = new QueryDefinition("SELECT c.id, c.tenantId, c.conversationId FROM c WHERE c.userId = @userId")
+            .WithParameter("@userId", userId);
+        using var iterator = container.GetItemQueryIterator<ChatHistoryItemId>(query);
+
+        while (iterator.HasMoreResults)
+        {
+            foreach (var item in await iterator.ReadNextAsync(cancellationToken))
+            {
+                var partitionKey = new PartitionKeyBuilder()
+                    .Add(item.TenantId)
+                    .Add(userId)
+                    .Add(item.ConversationId)
+                    .Build();
+                await container.DeleteItemAsync<ChatHistoryItemId>(item.Id, partitionKey, cancellationToken: cancellationToken);
+            }
+        }
+    }
+
+    private static async Task DeleteUserPartitionAsync(Container container, string userId, CancellationToken cancellationToken)
+    {
+        var query = new QueryDefinition("SELECT c.id FROM c WHERE c.userId = @userId")
+            .WithParameter("@userId", userId);
+        using var iterator = container.GetItemQueryIterator<CosmosItemId>(query);
+
+        while (iterator.HasMoreResults)
+        {
+            foreach (var item in await iterator.ReadNextAsync(cancellationToken))
+            {
+                await container.DeleteItemAsync<CosmosItemId>(item.Id, new PartitionKey(userId), cancellationToken: cancellationToken);
+            }
+        }
+    }
+
+    private sealed record ChatHistoryItemId(string Id, string TenantId, string ConversationId);
+    private sealed record CosmosItemId(string Id);
 
     private async Task<CreatedConversation> CreateConversationAsync(string userId, CancellationToken cancellationToken)
     {
@@ -248,6 +327,9 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.Contains(conversation.Messages, message =>
             message.Role == ChatRole.Assistant &&
             message.Contents.Any(content => content is FunctionCallContent));
+        Assert.Contains(conversation.Messages, message =>
+            message.Role == ChatRole.Tool &&
+            message.Contents.Any(content => content is FunctionResultContent));
     }
 
     [Fact]
@@ -279,6 +361,51 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.NotNull(conversation);
         var recalledUserMessage = Assert.Single(conversation.Messages, message => message.Text == prompt);
         Assert.Equal(messageId, recalledUserMessage.MessageId);
+    }
+
+    [Fact]
+    public async Task AGUIHistoryPersistsClientToolResult()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var userId = "test-" + Guid.NewGuid().ToString("N");
+        AITool[] clientTools =
+        [
+            AIFunctionFactory.Create(() => "51.3967°N, -1.3172°E", name: "get_user_location")
+        ];
+        var agent = CreateAGUIAgent(userId, clientTools);
+        var session = await agent.CreateSessionAsync(ct);
+        var continuation = new AGUIContinuationState();
+        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+        List<FunctionResultContent> streamedToolResults = [];
+
+        await foreach (var update in agent.RunStreamingAsync(
+            [CreateUserMessage("Where am I?")],
+            session,
+            continuation.CreateRunOptions(),
+            ct))
+        {
+            continuation.Observe(update);
+            streamedToolResults.AddRange(update.Contents.OfType<FunctionResultContent>());
+        }
+
+        Assert.NotEmpty(streamedToolResults);
+
+        using var http = CreateAgentHttpClient(userId);
+        var conversation = await http.GetFromJsonAsync<ConversationDetail>(
+            $"/conversations/{Uri.EscapeDataString(continuation.ThreadId!)}",
+            ct);
+
+        Assert.NotNull(conversation);
+        var recalledMessageSummary = string.Join(Environment.NewLine, conversation.Messages.Select(message =>
+            $"{message.Role}: {string.Join(", ", message.Contents.Select(content => content switch
+            {
+                FunctionCallContent call => $"FunctionCall({call.CallId})",
+                FunctionResultContent result => $"FunctionResult({result.CallId}, {result.Result})",
+                _ => content.GetType().Name,
+            }))}"));
+        Assert.True(
+            conversation.Messages.Any(message => message.Contents.OfType<FunctionResultContent>().Any()),
+            $"Recalled messages:{Environment.NewLine}{recalledMessageSummary}");
     }
 
     [Fact]

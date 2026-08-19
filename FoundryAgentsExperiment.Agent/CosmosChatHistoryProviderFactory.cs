@@ -39,12 +39,23 @@ public static class CosmosChatHistoryProviderFactory
             message.Role == ChatRole.User &&
             !string.IsNullOrWhiteSpace(message.MessageId));
 
-        if (identifiedUserMessage is null || !messagePersistenceTracker.TryMarkPersisted(identifiedUserMessage.MessageId))
+        List<ChatMessage> messagesToPersist = [];
+        if (identifiedUserMessage is not null && messagePersistenceTracker.TryMarkPersisted($"user:{identifiedUserMessage.MessageId}"))
         {
-            return [];
+            messagesToPersist.Add(identifiedUserMessage);
         }
 
-        return [identifiedUserMessage];
+        foreach (var toolResult in messages
+                     .SelectMany(message => message.Contents.OfType<FunctionResultContent>())
+                     .Where(result => !string.IsNullOrWhiteSpace(result.CallId)))
+        {
+            if (messagePersistenceTracker.TryMarkPersisted($"tool-result:{toolResult.CallId}"))
+            {
+                messagesToPersist.Add(new ChatMessage(ChatRole.Tool, [toolResult]));
+            }
+        }
+
+        return messagesToPersist;
     }
 
     private static IEnumerable<ChatMessage> FilterResponseHistoryMessages(IEnumerable<ChatMessage> messages) =>
