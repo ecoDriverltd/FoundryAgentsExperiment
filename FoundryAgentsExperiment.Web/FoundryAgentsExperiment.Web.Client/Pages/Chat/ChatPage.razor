@@ -52,11 +52,20 @@
     private string? _loadedConversationId;
 
     private readonly List<ChatMessage> _displayMessages = [];
+    private readonly Dictionary<string, string> _functionCallNames = [];
     private IReadOnlyList<ConversationSummary> _conversations = [];
     private ChatMessage? _inProgressMessage;
     private CancellationTokenSource? _streamingCts;
 
     private ChatInput? _chatInput;
+
+    private static readonly IReadOnlyDictionary<string, ToolPresentationPolicy> ToolPresentationPolicies =
+        new Dictionary<string, ToolPresentationPolicy>(StringComparer.Ordinal)
+        {
+            ["get_user_location"] = new(ShowResult: true, HideFollowingAssistantResponse: true),
+        };
+
+    private bool _hideFollowingAssistantResponse;
 
     protected override async Task OnInitializedAsync()
     {
@@ -93,15 +102,14 @@
         _session = null;
         _inProgressMessage = null;
         _displayMessages.Clear();
+        _functionCallNames.Clear();
+        _hideFollowingAssistantResponse = false;
 
         var conversation = await ConversationClient.GetConversationAsync(conversationId);
         _continuation.Restore(conversation.ConversationId, conversation.LastRunId);
 
         foreach (var message in conversation.Messages)
-        {
-            if (IsDisplayableMessage(message))
-                _displayMessages.Add(message);
-        }
+            AddDisplayMessage(message);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -119,6 +127,7 @@
     private async Task SendMessageAsync(string userText)
     {
         CancelStreaming();
+        _hideFollowingAssistantResponse = false;
 
         // Add to display list immediately
         var userMessage = new ChatMessage(ChatRole.User, userText)
@@ -171,14 +180,17 @@
                     switch (content)
                     {
                         case TextContent text:
-                            responseText.Text += text.Text;
-                            ChatMessageItem.NotifyChanged(inProgressMessage);
+                            if (!_hideFollowingAssistantResponse)
+                            {
+                                responseText.Text += text.Text;
+                                ChatMessageItem.NotifyChanged(inProgressMessage);
+                            }
                             break;
                         case FunctionCallContent call:
-                            _displayMessages.Add(new ChatMessage(ChatRole.Tool, $"🔧 Calling {call.Name}…"));
+                            _functionCallNames[call.CallId] = call.Name;
                             break;
                         case FunctionResultContent result:
-                            _displayMessages.Add(new ChatMessage(ChatRole.Tool, $"✅ {result.Result}"));
+                            AddVisibleToolResult(result);
                             break;
                     }
                 }
@@ -194,7 +206,8 @@
         {
             if (ReferenceEquals(_streamingCts, streamingCts))
             {
-                _displayMessages.Add(inProgressMessage);
+                if (!string.IsNullOrWhiteSpace(inProgressMessage.Text))
+                    _displayMessages.Add(inProgressMessage);
                 _inProgressMessage = null;
                 _isStreaming = false;
                 _streamingCts = null;
@@ -222,6 +235,8 @@
         _hasConversationUrl = false;
         _session = null;
         _displayMessages.Clear();
+        _functionCallNames.Clear();
+        _hideFollowingAssistantResponse = false;
         _inProgressMessage = null;
         Nav.NavigateTo("/chat");
     }
@@ -232,27 +247,53 @@
         _conversationId = conversation.Id;
         _session = null;
         _displayMessages.Clear();
+        _functionCallNames.Clear();
+        _hideFollowingAssistantResponse = false;
         _inProgressMessage = null;
         Nav.NavigateTo($"/chat/{conversation.Id}");
         await InvokeAsync(StateHasChanged);
     }
 
-    private static bool IsDisplayableMessage(ChatMessage message) =>
-        (message.Role.Value == "user" || message.Role.Value == "assistant" || message.Role.Value == "tool") &&
-        message.Contents.Any(content => content switch
+    private void AddDisplayMessage(ChatMessage message)
+    {
+        foreach (var call in message.Contents.OfType<FunctionCallContent>())
+            _functionCallNames[call.CallId] = call.Name;
+
+        foreach (var result in message.Contents.OfType<FunctionResultContent>())
+            AddVisibleToolResult(result);
+
+        if ((message.Role == ChatRole.User || message.Role == ChatRole.Assistant) &&
+            message.Contents.OfType<TextContent>().Any(content => !string.IsNullOrWhiteSpace(content.Text)))
         {
-            TextContent { Text.Length: > 0 } => true,
-            FunctionCallContent => true,
-            FunctionResultContent => true,
-            _ => false,
-        });
+            if (message.Role == ChatRole.Assistant && _hideFollowingAssistantResponse)
+            {
+                _hideFollowingAssistantResponse = false;
+            }
+            else
+            {
+                _displayMessages.Add(message);
+            }
+        }
+    }
+
+    private void AddVisibleToolResult(FunctionResultContent result)
+    {
+        if (_functionCallNames.TryGetValue(result.CallId, out var toolName) &&
+            ToolPresentationPolicies.TryGetValue(toolName, out var policy))
+        {
+            if (policy.ShowResult)
+                _displayMessages.Add(new ChatMessage(ChatRole.Tool, $"✅ {result.Result}"));
+
+            _hideFollowingAssistantResponse = policy.HideFollowingAssistantResponse;
+        }
+    }
 
     private async Task RefreshConversationsAsync() =>
         _conversations = await ConversationClient.GetConversationsAsync();
 
     private void CancelStreaming()
     {
-        if (_inProgressMessage is not null)
+        if (_inProgressMessage is { Text.Length: > 0 })
             _displayMessages.Add(_inProgressMessage);
 
         _streamingCts?.Cancel();
@@ -262,4 +303,6 @@
     }
 
     public void Dispose() => _streamingCts?.Cancel();
+
+    private sealed record ToolPresentationPolicy(bool ShowResult, bool HideFollowingAssistantResponse);
 }
