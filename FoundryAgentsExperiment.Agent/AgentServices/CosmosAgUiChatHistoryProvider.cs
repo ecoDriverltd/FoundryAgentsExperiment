@@ -17,9 +17,15 @@ namespace FoundryAgentsExperiment.Agent.AgentServices;
 /// Persists the model-replayable AG-UI transcript in Cosmos DB.
 /// </summary>
 /// <remarks>
-/// Each record uses a deterministic ID and Cosmos create-only semantics. A <see cref="HttpStatusCode.Conflict"/>
-/// therefore represents a retried AG-UI continuation that was already persisted, rather than an error or a duplicate.
-/// This makes deduplication durable across process restarts and scaled-out agent instances.
+/// AG-UI identifies protocol requests with thread and run identifiers, and may resend a continuation after a
+/// transport retry or when a browser-owned tool completes. This provider maps the AG-UI thread stored in the
+/// <see cref="AgentSession"/> to a durable Cosmos conversation partition, then stores only the messages needed
+/// to reconstruct the model-visible transcript: conversational text, function calls, and function results.
+///
+/// Each transcript record has a deterministic ID and is created rather than upserted. A
+/// <see cref="HttpStatusCode.Conflict"/> therefore means the same AG-UI continuation was already persisted,
+/// not that a second copy should be written. This provides durable idempotency across retries, process restarts,
+/// and scaled-out agent instances without an in-memory duplicate-tracking cache.
 /// </remarks>
 public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
 {
@@ -45,7 +51,18 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         this.httpContextAccessor = httpContextAccessor;
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Loads the persisted transcript in deterministic order before the Agent Framework invokes the model.
+    /// </summary>
+    /// <remarks>
+    /// Deterministic order means the model receives prior user messages, assistant responses, function calls, and
+    /// function results in the same chronological sequence in which they were persisted. This restores the context
+    /// needed to continue an AG-UI conversation while the browser sends only the current turn or tool continuation.
+    ///
+    /// The query is constrained to the caller's tenant, user, and AG-UI conversation partition. It excludes the
+    /// provider's sequence-counter document and returns only each serialized <see cref="ChatMessage"/> payload,
+    /// which avoids materializing Cosmos metadata during history replay.
+    /// </remarks>
     protected override async ValueTask<IEnumerable<ChatMessage>> ProvideChatHistoryAsync(
         InvokingContext context,
         CancellationToken cancellationToken = default)
@@ -85,7 +102,14 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Persists the replayable request and response messages from a completed Agent Framework invocation.
+    /// </summary>
+    /// <remarks>
+    /// A browser-owned tool result reaches the server through a later AG-UI continuation. The request filter
+    /// normalizes that result to a <see cref="ChatRole.Tool"/> message so it survives reload and is available to
+    /// later model invocations. Function calls and normal assistant responses are stored from the response path.
+    /// </remarks>
     protected override async ValueTask StoreChatHistoryAsync(
         InvokedContext context,
         CancellationToken cancellationToken = default)
@@ -138,6 +162,13 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         }
     }
 
+    /// <summary>
+    /// Allocates the next replay-order value within one Cosmos conversation partition.
+    /// </summary>
+    /// <remarks>
+    /// The counter is patched on the normal path. A missing counter is expected only for the first persisted
+    /// message in a conversation; the conflict path handles two simultaneous first writes safely.
+    /// </remarks>
     private async Task<long> AllocateSequenceAsync(ConversationScope scope, CancellationToken cancellationToken)
     {
         const string counterId = "_transcript-sequence";
@@ -179,6 +210,9 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         }
     }
 
+    /// <summary>
+    /// Resolves the Cosmos partition from the AG-UI thread recorded in the agent session and the current caller.
+    /// </summary>
     private ConversationScope GetScope(AgentSession? session)
     {
         var conversationId = session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.ConversationIdStateBagKey, out var threadId) == true
@@ -197,6 +231,14 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         httpContextAccessor.HttpContext?.RequestServices.GetService<ILogger<CosmosAgUiChatHistoryProvider>>()
         ?? NullLogger<CosmosAgUiChatHistoryProvider>.Instance;
 
+    /// <summary>
+    /// Selects new inbound AG-UI content that must be persisted before the next model response.
+    /// </summary>
+    /// <remarks>
+    /// AG-UI continuations can include prior messages. The final identified user message is the new user turn.
+    /// Browser tool results can arrive independently of that user message, so every result with a call ID is
+    /// retained as a tool message for replay.
+    /// </remarks>
     private static List<ChatMessage> FilterRequestMessages(IEnumerable<ChatMessage> messages)
     {
         var identifiedUserMessage = messages.LastOrDefault(message =>
@@ -218,6 +260,9 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         return messagesToPersist;
     }
 
+    /// <summary>
+    /// Removes protocol-only messages that are not needed to reconstruct later model context.
+    /// </summary>
     private static List<ChatMessage> FilterReplayableMessages(IEnumerable<ChatMessage> messages) =>
         [.. messages.Where(IsReplayableTranscriptMessage)];
 
@@ -225,6 +270,14 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         !string.IsNullOrWhiteSpace(message.Text) ||
         message.Contents.Any(content => content is FunctionCallContent or FunctionResultContent);
 
+    /// <summary>
+    /// Builds a deterministic Cosmos document ID for a replayable transcript message.
+    /// </summary>
+    /// <remarks>
+    /// Stable AG-UI user message IDs and function call IDs make continuation retries idempotent. For ordinary
+    /// response messages without their own ID, the current user message or tool result anchors the record to a
+    /// single turn. The content hash is a last-resort fallback when AG-UI provides neither kind of identifier.
+    /// </remarks>
     private static string GetIdempotencyKey(ChatMessage message, string? turnAnchor, int index)
     {
         if (!string.IsNullOrWhiteSpace(message.MessageId))
@@ -266,6 +319,9 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         return $"message:{message.Role.Value}:{index:D4}:{hash}";
     }
 
+    /// <summary>
+    /// Gets the stable user-message or tool-result identifier that scopes response-only records to an AG-UI turn.
+    /// </summary>
     private static string? GetTurnAnchor(IEnumerable<ChatMessage> requestMessages) =>
         requestMessages.LastOrDefault(message =>
             message.Role == ChatRole.User && !string.IsNullOrWhiteSpace(message.MessageId))?.MessageId
@@ -273,6 +329,9 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
             .SelectMany(message => message.Contents.OfType<FunctionResultContent>())
             .LastOrDefault(result => !string.IsNullOrWhiteSpace(result.CallId))?.CallId;
 
+    /// <summary>
+    /// Represents the hierarchical Cosmos partition that isolates one user's AG-UI conversation.
+    /// </summary>
     private sealed record ConversationScope(string TenantId, string UserId, string ConversationId)
     {
         public PartitionKey PartitionKey => new PartitionKeyBuilder()
@@ -284,6 +343,11 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
 
     private sealed record PersistedMessage(ChatMessage Message, int Index);
 
+    /// <summary>
+    /// Cosmos document for one replayable message. Newtonsoft attributes match Cosmos's required lowercase
+    /// <c>id</c> and configured partition-key property names; the message itself remains System.Text.Json text
+    /// because it contains polymorphic Agent Framework content.
+    /// </summary>
     private sealed record TranscriptRecord(
         [property: JsonProperty("id")] string Id,
         [property: JsonProperty("tenantId")] string TenantId,
@@ -297,6 +361,9 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
         public string RecordType => "message";
     }
 
+    /// <summary>
+    /// Cosmos metadata document that atomically assigns replay order within a conversation partition.
+    /// </summary>
     private sealed record TranscriptSequenceRecord(
         [property: JsonProperty("id")] string Id,
         [property: JsonProperty("tenantId")] string TenantId,
