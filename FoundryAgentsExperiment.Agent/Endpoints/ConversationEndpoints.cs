@@ -1,12 +1,11 @@
 using FoundryAgentsExperiment.Agent.AgentExtensions;
+using FoundryAgentsExperiment.Agent.AgentServices;
 using FoundryAgentsExperiment.Shared.Models;
 using Microsoft.Agents.AI;
-using Microsoft.Agents.AI.CosmosNoSql;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.DependencyInjection;
 
-namespace FoundryAgentsExperiment.Agent.AgentServices;
+namespace FoundryAgentsExperiment.Agent.Endpoints;
 
 public static class ConversationEndpoints
 {
