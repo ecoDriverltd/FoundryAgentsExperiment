@@ -1,6 +1,7 @@
 ﻿using Azure.AI.Projects;
 using Azure.AI.Projects.Agents;
 using Azure.Core;
+using FoundryAgentsExperiment.Agent.AgentServices;
 using Microsoft.Agents.AI;
 using ModelContextProtocol.Client;
 

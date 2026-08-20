@@ -1,7 +1,7 @@
 ﻿using Azure.Core;
 using System.Net.Http.Headers;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 // HttpClientHandler that attaches a Foundry bearer token to every outgoing request, caching it
 // until shortly before it expires. Without caching, every single MCP request (skill/tool listing,

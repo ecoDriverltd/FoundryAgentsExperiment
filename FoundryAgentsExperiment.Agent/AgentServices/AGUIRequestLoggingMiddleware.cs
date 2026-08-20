@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 public static class AGUIRequestLoggingMiddleware
 {

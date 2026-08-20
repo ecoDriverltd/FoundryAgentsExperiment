@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 public sealed class ChatMessagePersistenceTracker
 {

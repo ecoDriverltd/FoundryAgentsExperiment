@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 /// <summary>
 /// One document per (conversation ID, user ID), storing the serialized <see cref="AgentSession"/>

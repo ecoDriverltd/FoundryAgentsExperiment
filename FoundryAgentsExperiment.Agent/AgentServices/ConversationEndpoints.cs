@@ -6,7 +6,7 @@ using Microsoft.Agents.AI.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 public static class ConversationEndpoints
 {
