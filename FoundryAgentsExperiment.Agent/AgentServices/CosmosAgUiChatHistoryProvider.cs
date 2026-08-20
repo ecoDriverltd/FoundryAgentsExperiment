@@ -93,7 +93,20 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
                 }
             }
 
-            return messages;
+            var incomingMessages = FilterReplayableMessages(context.RequestMessages);
+            var overlapCount = GetOverlappingMessageCount(messages, incomingMessages);
+            var historyToPrepend = messages.Take(messages.Count - overlapCount).ToList();
+
+            Logger.LogInformation(
+                "[Transcript] Replaying {MessageCount} of {PersistedMessageCount} messages for conversation {ConversationId}; overlapping incoming messages={OverlapCount}; replay={Messages}; incoming={IncomingMessages}",
+                historyToPrepend.Count,
+                messages.Count,
+                scope.ConversationId,
+                overlapCount,
+                DescribeMessages(historyToPrepend),
+                DescribeMessages(incomingMessages));
+
+            return historyToPrepend;
         }
         catch (Exception exception)
         {
@@ -145,6 +158,12 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
                 try
                 {
                     await container.CreateItemAsync(record, scope.PartitionKey, cancellationToken: cancellationToken);
+                    Logger.LogDebug(
+                        "[Transcript] Persisted {TranscriptRecordId} at sequence {Sequence} for conversation {ConversationId}: {Message}",
+                        key,
+                        sequence,
+                        scope.ConversationId,
+                        DescribeMessage(message));
                 }
                 catch (CosmosException exception) when (exception.StatusCode == HttpStatusCode.Conflict)
                 {
@@ -236,8 +255,8 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
     /// </summary>
     /// <remarks>
     /// AG-UI continuations can include prior messages. The final identified user message is the new user turn.
-    /// Browser tool results can arrive independently of that user message, so every result with a call ID is
-    /// retained as a tool message for replay.
+    /// Browser tool calls and results can arrive independently of that user message, so both sides of every
+    /// function interaction are retained for durable, valid replay after a browser reload.
     /// </remarks>
     private static List<ChatMessage> FilterRequestMessages(IEnumerable<ChatMessage> messages)
     {
@@ -250,12 +269,20 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
             messagesToPersist.Add(identifiedUserMessage);
         }
 
-        // Browser-owned tools return through a later AG-UI continuation. Store their result as a Tool message
-        // even if the transport representation supplied a different role.
-        messagesToPersist.AddRange(messages
-            .SelectMany(message => message.Contents.OfType<FunctionResultContent>())
-            .Where(result => !string.IsNullOrWhiteSpace(result.CallId))
-            .Select(result => new ChatMessage(ChatRole.Tool, [result])));
+        foreach (var message in messages)
+        {
+            if (message.Contents.OfType<FunctionCallContent>().Any(call => !string.IsNullOrWhiteSpace(call.CallId)))
+            {
+                messagesToPersist.Add(message);
+            }
+
+            // Browser-owned tools return through a later AG-UI continuation. Store their result as a Tool message
+            // even if the transport representation supplied a different role.
+            messagesToPersist.AddRange(message.Contents
+                .OfType<FunctionResultContent>()
+                .Where(result => !string.IsNullOrWhiteSpace(result.CallId))
+                .Select(result => new ChatMessage(ChatRole.Tool, [result])));
+        }
 
         return messagesToPersist;
     }
@@ -269,6 +296,97 @@ public sealed class CosmosAgUiChatHistoryProvider : ChatHistoryProvider
     private static bool IsReplayableTranscriptMessage(ChatMessage message) =>
         !string.IsNullOrWhiteSpace(message.Text) ||
         message.Contents.Any(content => content is FunctionCallContent or FunctionResultContent);
+
+    /// <summary>
+    /// Finds the longest persisted transcript suffix already represented at the beginning of an AG-UI continuation.
+    /// </summary>
+    /// <remarks>
+    /// AG-UI resends the active tool-loop protocol sequence, while this provider owns older durable history. Returning
+    /// only the non-overlapping Cosmos prefix keeps persistence transparent to the model: it receives one continuous
+    /// transcript rather than the same user/tool interaction from both sources.
+    /// </remarks>
+    private static int GetOverlappingMessageCount(
+        IReadOnlyList<ChatMessage> persistedMessages,
+        IReadOnlyList<ChatMessage> incomingMessages)
+    {
+        var maximumOverlap = Math.Min(persistedMessages.Count, incomingMessages.Count);
+        for (var overlapCount = maximumOverlap; overlapCount > 0; overlapCount--)
+        {
+            var persistedStart = persistedMessages.Count - overlapCount;
+            var matches = true;
+            for (var index = 0; index < overlapCount; index++)
+            {
+                if (!HaveSameReplayIdentity(persistedMessages[persistedStart + index], incomingMessages[index]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                return overlapCount;
+            }
+        }
+
+        return 0;
+    }
+
+    private static bool HaveSameReplayIdentity(ChatMessage persisted, ChatMessage incoming)
+    {
+        var persistedIdentity = GetReplayIdentity(persisted);
+        var incomingIdentity = GetReplayIdentity(incoming);
+        return persistedIdentity is not null && StringComparer.Ordinal.Equals(persistedIdentity, incomingIdentity);
+    }
+
+    private static string? GetReplayIdentity(ChatMessage message)
+    {
+        if (!string.IsNullOrWhiteSpace(message.MessageId))
+        {
+            return $"message:{message.Role.Value}:{message.MessageId}";
+        }
+
+        var functionCallIds = message.Contents
+            .OfType<FunctionCallContent>()
+            .Select(call => call.CallId)
+            .Where(callId => !string.IsNullOrWhiteSpace(callId))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (functionCallIds.Length > 0)
+        {
+            return $"function-call:{string.Join(':', functionCallIds)}";
+        }
+
+        var functionResultIds = message.Contents
+            .OfType<FunctionResultContent>()
+            .Select(result => result.CallId)
+            .Where(callId => !string.IsNullOrWhiteSpace(callId))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        return functionResultIds.Length > 0
+            ? $"function-result:{string.Join(':', functionResultIds)}"
+            : null;
+    }
+
+    /// <summary>
+    /// Produces a compact, payload-free transcript description for correlating AG-UI continuations with Cosmos replay.
+    /// </summary>
+    private static string DescribeMessages(IEnumerable<ChatMessage> messages) =>
+        string.Join(", ", messages.Select(DescribeMessage));
+
+    private static string DescribeMessage(ChatMessage message)
+    {
+        var callIds = message.Contents
+            .OfType<FunctionCallContent>()
+            .Select(call => $"call:{call.Name}:{call.CallId}");
+        var resultIds = message.Contents
+            .OfType<FunctionResultContent>()
+            .Select(result => $"result:{result.CallId}");
+        var identifiers = string.Join("|", callIds.Concat(resultIds));
+
+        return $"{message.Role}:messageId={message.MessageId ?? "<none>"}" +
+            (string.IsNullOrEmpty(identifiers) ? string.Empty : $":{identifiers}");
+    }
 
     /// <summary>
     /// Builds a deterministic Cosmos document ID for a replayable transcript message.

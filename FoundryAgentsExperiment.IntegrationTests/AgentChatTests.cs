@@ -12,6 +12,7 @@ using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using Xunit;
@@ -36,6 +37,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 
     private CancellationTokenSource? resourceLogCts;
     private readonly HashSet<string> testUserIds = [];
+    private readonly ConcurrentQueue<string> agentDiagnostics = new();
     private string? cosmosConnectionString;
 
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
@@ -116,6 +118,13 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
                 {
                     foreach (var (_, content, _) in batch)
                     {
+                        if (content.Contains("[Wire]", StringComparison.Ordinal) ||
+                            content.Contains("[Transcript]", StringComparison.Ordinal) ||
+                            content.Contains("[Model]", StringComparison.Ordinal))
+                        {
+                            this.agentDiagnostics.Enqueue(content);
+                        }
+
                         this.output.WriteLine(content);
                     }
                 }
@@ -364,7 +373,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task AGUIHistoryPersistsClientToolResult()
+    public async Task AGUIClientToolContinuationsDoNotDuplicateTranscriptHistory()
     {
         var ct = TestContext.Current.CancellationToken;
         var userId = "test-" + Guid.NewGuid().ToString("N");
@@ -376,19 +385,28 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var session = await agent.CreateSessionAsync(ct);
         var continuation = new AGUIContinuationState();
         continuation.InitializeThread(Guid.NewGuid().ToString("N"));
-        List<FunctionResultContent> streamedToolResults = [];
 
-        await foreach (var update in agent.RunStreamingAsync(
-            [CreateUserMessage("Where am I?")],
-            session,
-            continuation.CreateRunOptions(),
-            ct))
-        {
-            continuation.Observe(update);
-            streamedToolResults.AddRange(update.Contents.OfType<FunctionResultContent>());
-        }
+        var firstTurnResults = await RunLocationTurnAsync(agent, session, continuation, "Where am I?", ct);
+        var secondTurnResults = await RunLocationTurnAsync(agent, session, continuation, "Where am I now?", ct);
+        await Task.Delay(TimeSpan.FromSeconds(1), ct);
 
-        Assert.NotEmpty(streamedToolResults);
+        var streamedToolResults = firstTurnResults.Concat(secondTurnResults).ToList();
+        var streamedToolResultSummary = string.Join(
+            ", ",
+            streamedToolResults.Select(result => $"{result.CallId}={result.Result}"));
+        output.WriteLine($"Location-tool results={streamedToolResultSummary}");
+        Assert.True(
+            firstTurnResults.Count == 1,
+            $"Expected one first-turn tool result but received {firstTurnResults.Count}:{Environment.NewLine}" +
+            GetAgentDiagnostics());
+        Assert.True(
+            secondTurnResults.Count == 1,
+            $"Expected one second-turn tool result but received {secondTurnResults.Count}:{Environment.NewLine}" +
+            GetAgentDiagnostics());
+        Assert.NotEqual(firstTurnResults[0].CallId, secondTurnResults[0].CallId);
+        Assert.Equal(
+            streamedToolResults.Count,
+            streamedToolResults.Select(result => result.CallId).Distinct(StringComparer.Ordinal).Count());
 
         using var http = CreateAgentHttpClient(userId);
         var conversation = await http.GetFromJsonAsync<ConversationDetail>(
@@ -406,7 +424,46 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.True(
             conversation.Messages.Any(message => message.Contents.OfType<FunctionResultContent>().Any()),
             $"Recalled messages:{Environment.NewLine}{recalledMessageSummary}");
+        var persistedToolResults = conversation.Messages
+            .SelectMany(message => message.Contents.OfType<FunctionResultContent>())
+            .ToList();
+        Assert.Equal(
+            persistedToolResults.Count,
+            persistedToolResults.Select(result => result.CallId).Distinct(StringComparer.Ordinal).Count());
+
+        var persistedFunctionCallIds = conversation.Messages
+            .SelectMany(message => message.Contents.OfType<FunctionCallContent>())
+            .Select(call => call.CallId)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.All(
+            persistedToolResults,
+            result => Assert.Contains(result.CallId, persistedFunctionCallIds));
+        Assert.Equal(2, persistedToolResults.Count);
     }
+
+    private static async Task<List<FunctionResultContent>> RunLocationTurnAsync(
+        ChatClientAgent agent,
+        AgentSession session,
+        AGUIContinuationState continuation,
+        string prompt,
+        CancellationToken cancellationToken)
+    {
+        List<FunctionResultContent> toolResults = [];
+        await foreach (var update in agent.RunStreamingAsync(
+            [CreateUserMessage(prompt)],
+            session,
+            continuation.CreateRunOptions(),
+            cancellationToken))
+        {
+            continuation.Observe(update);
+            toolResults.AddRange(update.Contents.OfType<FunctionResultContent>());
+        }
+
+        return toolResults;
+    }
+
+    private string GetAgentDiagnostics() =>
+        string.Join(Environment.NewLine, agentDiagnostics.TakeLast(100));
 
     [Fact]
     public async Task ConversationListPersistsAGUIRunContinuation()

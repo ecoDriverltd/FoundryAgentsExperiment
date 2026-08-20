@@ -1,5 +1,6 @@
 ﻿using Azure.AI.Projects;
 using Azure.Core;
+using Azure.Core.Diagnostics;
 using FoundryAgentsExperiment.Agent.AgentExtensions;
 using FoundryAgentsExperiment.Agent.AgentServices;
 using FoundryAgentsExperiment.Agent.Endpoints;
@@ -11,6 +12,7 @@ using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using OpenAI.Responses;
+using System.Diagnostics.Tracing;
 
 var port = Environment.GetEnvironmentVariable("DEFAULT_AD_PORT") ?? "8088";
 
@@ -55,6 +57,9 @@ Console.WriteLine($"Model Deployment: {foundrySettings.DeploymentName}");
 const string agentName = "agent-dotnet";
 var projectClient = new AIProjectClient(foundrySettings.ProjectUri, credential);
 var openAIClient = projectClient.GetProjectOpenAIClient();
+var modelRequestLoggerFactory = LoggerFactory.Create(logging => logging.AddConsole());
+var modelRequestLogger = modelRequestLoggerFactory.CreateLogger("ModelRequestLogging");
+using var azureSdkDiagnostics = AzureEventSourceListener.CreateConsoleLogger(EventLevel.Informational);
 
 // Shared instance so the memory provider and session store resolve the same request context.
 var httpContextAccessor = new HttpContextAccessor();
@@ -89,20 +94,22 @@ builder.Services.AddSingleton<CosmosConversationIndexStore>();
 // while using an in-memory summary to shape the current model request.
 // Reusing the same Responses client/model as the summarizer for simplicity in this experiment; swap
 // in a smaller/cheaper deployment here if one becomes available.
-var summarizerChatClient = projectClient
+var summarizerChatClient = new ModelRequestLoggingChatClient(projectClient
     .GetProjectOpenAIClient()
     .GetProjectResponsesClient()
-    .AsIChatClientWithStoredOutputDisabled();
+    .AsIChatClientWithStoredOutputDisabled(), modelRequestLogger);
 
 var compactionProvider = new CompactionProvider(
     new SummarizationCompactionStrategy(
         chatClient: summarizerChatClient,
         trigger: CompactionTriggers.TokensExceed(50_000)));
 
-AIAgent agent = projectClient
+var modelChatClient = new ModelRequestLoggingChatClient(projectClient
     .GetProjectOpenAIClient()
     .GetProjectResponsesClient()
-    .AsIChatClientWithStoredOutputDisabled()
+    .AsIChatClientWithStoredOutputDisabled(), modelRequestLogger);
+
+AIAgent agent = modelChatClient
     .AsBuilder()
     .UseAIContextProviders(compactionProvider)
     .BuildAIAgent(new ChatClientAgentOptions

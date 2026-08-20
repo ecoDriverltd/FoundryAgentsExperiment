@@ -60,6 +60,20 @@ public static class AGUIRequestLoggingMiddleware
                 : "<null>"
             : null;
 
-        return $"{role ?? "<none>"}:{id ?? "<null>"}:toolCallId={toolCallId ?? "<null>"}:{contentKind}{(contentSummary is null ? string.Empty : $"={contentSummary}")}";
+        var toolCalls = message.TryGetProperty("toolCalls", out var toolCallsProperty) && toolCallsProperty.ValueKind == JsonValueKind.Array
+            ? string.Join("|", toolCallsProperty.EnumerateArray().Select(DescribeToolCall))
+            : null;
+
+        return $"{role ?? "<none>"}:{id ?? "<null>"}:toolCallId={toolCallId ?? "<null>"}:{contentKind}{(contentSummary is null ? string.Empty : $"={contentSummary}")}{(toolCalls is null ? string.Empty : $":toolCalls={toolCalls}")}";
+    }
+
+    private static string DescribeToolCall(JsonElement toolCall)
+    {
+        var id = toolCall.TryGetProperty("id", out var idProperty) ? idProperty.GetString() : null;
+        var name = toolCall.TryGetProperty("function", out var functionProperty) &&
+            functionProperty.TryGetProperty("name", out var nameProperty)
+                ? nameProperty.GetString()
+                : null;
+        return $"{name ?? "<unknown>"}:{id ?? "<null>"}";
     }
 }
