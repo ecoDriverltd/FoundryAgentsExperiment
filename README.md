@@ -18,8 +18,7 @@ Goals are to have a Blazor Chat UI in which you can
  - Trigger some front end tool call (in this case, ask it 'Where am I?' to get it to use geolocation on the client)
  - Trigger use of a skill (in this case 'silly math', i.e. 'use your silly math skill to do 1 + 1)
 
-I don't claim that any approach used in this project is a good idea, AG-UI doesn't want to play ball with server managed conversation history if you try and use things 
-the 'out of the box/getting started' way with Agent Framework and this is what I've put together (what co-pilot has put together with my input), to make it work.
+I don't claim that any approach used in this project is a good idea, but I'm happy with what I've got working so far. AG-UI doesn't want to play ball with server managed conversation history if you try and use things the 'out of the box/getting started' way with Agent Framework and this is what I've put together (what co-pilot has put together with my input), to make it work.
 
 It's the custom chat history provider doing a lot of the heavy lifting on this, as the way AG-UI calls/turns take shape, you end up with very strange out of shape history 
 with much duplication and out of order messages if you try to do this with the CosmosChatHistoryProvider on nuget.
