@@ -12,7 +12,7 @@ public static class ConversationEndpoints
     public static WebApplication MapConversationEndpoints(
         this WebApplication app,
         string agentName,
-        CosmosChatHistoryProvider chatHistoryProvider)
+        ChatHistoryProvider chatHistoryProvider)
     {
         app.MapGet("/conversations/{conversationId}",
             async ([FromRoute] string conversationId, HttpContext context, CancellationToken ct) =>

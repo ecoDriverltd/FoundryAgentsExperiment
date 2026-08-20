@@ -30,7 +30,7 @@ public sealed class ConversationIndexDbContext(DbContextOptions<ConversationInde
         entity.Property(entry => entry.Id).ToJsonProperty("id");
         entity.Property(entry => entry.UserId).ToJsonProperty("userId");
 
-        // Mirrors the retention window on CosmosChatHistoryProvider.MessageTtlSeconds (Agent.cs) -
+        // Mirrors the retention window on CosmosAgUiChatHistoryProvider's transcript records -
         // a conversation's index entry should stick around at least as long as its messages do,
         // otherwise it could disappear from the /conversations list while its history is still
         // resumable. Only takes effect if the container's TTL is actually enabled/synced (see note

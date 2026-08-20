@@ -9,8 +9,8 @@ namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 /// <summary>
 /// One document per (conversation ID, user ID), storing the serialized <see cref="AgentSession"/>
-/// and provider bookkeeping. Chat messages remain in CosmosChatHistoryProvider's separate
-/// "chat-history" container.
+/// and provider bookkeeping. Chat messages remain in CosmosAgUiChatHistoryProvider's separate
+/// "agent-transcript" container.
 /// </summary>
 public sealed record AgentSessionEntry(
     string Id,
@@ -43,7 +43,7 @@ public sealed class AgentSessionDbContext(DbContextOptions<AgentSessionDbContext
 /// <summary>
 /// AG-UI-facing <see cref="AgentSessionStore"/>. It persists the small serialized
 /// <see cref="AgentSession"/> by AG-UI thread ID and user ID. Chat messages remain in the
-/// server-managed CosmosChatHistoryProvider transcript.
+/// server-managed CosmosAgUiChatHistoryProvider transcript.
 /// </summary>
 public sealed class CosmosAgentSessionStore(
     IServiceScopeFactory scopeFactory,

@@ -58,9 +58,7 @@ var openAIClient = projectClient.GetProjectOpenAIClient();
 
 // Shared instance so the memory provider and session store resolve the same request context.
 var httpContextAccessor = new HttpContextAccessor();
-var messagePersistenceTracker = new ChatMessagePersistenceTracker();
 builder.Services.AddSingleton<IHttpContextAccessor>(httpContextAccessor);
-builder.Services.AddSingleton(messagePersistenceTracker);
 
 builder.Services.AddCosmosAgentSessionStore(agentName);
 
@@ -83,10 +81,7 @@ var memoryProvider = await projectClient.GetFoundryMemoryProviderAsync(agentName
 string toolboxName = "my-toolbox";
 var skillsProvider = await builder.GetTestAgentSkillsProviderAsync(projectClient, toolboxName, foundrySettings, credential);
 
-var chatHistoryProvider = CosmosChatHistoryProviderFactory.Create(
-    cosmosClient,
-    httpContextAccessor,
-    messagePersistenceTracker);
+var chatHistoryProvider = new CosmosAgUiChatHistoryProvider(cosmosClient, httpContextAccessor);
 
 builder.Services.AddSingleton<CosmosConversationIndexStore>();
 
@@ -158,8 +153,8 @@ agentHost.MapOpenAIConversations();
 // Optional diagnostics only; this middleware does not affect request processing or persistence.
 agentHost.UseAGUIRequestLogging();
 
-// The AG-UI server persists session state by protocol thread ID while CosmosChatHistoryProvider
-// retains the server-managed transcript.
+// The AG-UI server persists session state by protocol thread ID while the custom Cosmos provider
+// retains the durable, model-replayable transcript.
 agentHost.MapAGUIServer(agentName, "/ag-ui");
 
 agentHost.MapConversationEndpoints(agentName, chatHistoryProvider);

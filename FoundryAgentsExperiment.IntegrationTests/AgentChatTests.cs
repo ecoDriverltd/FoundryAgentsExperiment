@@ -181,13 +181,13 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 
         foreach (var userId in testUserIds)
         {
-            await DeleteChatHistoryAsync(database.GetContainer("chat-history"), userId, cancellationToken);
+            await DeleteTranscriptAsync(database.GetContainer("agent-transcript"), userId, cancellationToken);
             await DeleteUserPartitionAsync(database.GetContainer("agent-sessions"), userId, cancellationToken);
             await DeleteUserPartitionAsync(database.GetContainer("conversation-index"), userId, cancellationToken);
         }
     }
 
-    private static async Task DeleteChatHistoryAsync(
+    private static async Task DeleteTranscriptAsync(
         Container container,
         string userId,
         CancellationToken cancellationToken)

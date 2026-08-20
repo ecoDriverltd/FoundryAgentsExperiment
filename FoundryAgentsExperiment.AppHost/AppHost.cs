@@ -66,14 +66,13 @@ var embeddings = foundry.AddDeployment("embeddings-model", FoundryModel.OpenAI.T
 embeddings.Resource.SkuCapacity = 1000;
 
 // Real Azure Cosmos account (no RunAsEmulator()) - consistent with AddFoundry above, which always
-// provisions a real Azure resource even for local F5 runs. Backs the agent's client-managed chat
-// history (Microsoft.Agents.AI.CosmosNoSql's CosmosChatHistoryProvider) and the conversation index
-// used to list a user's past conversations.
+// provisions a real Azure resource even for local F5 runs. Backs the agent's durable AG-UI transcript
+// and the conversation index used to list a user's past conversations.
 var cosmosDb = builder.AddAzureCosmosDB("cosmos");
 var database = cosmosDb.AddCosmosDatabase("agent-history");
-// Partition key path must match CosmosChatHistoryProvider.BuildPartitionKey's hierarchical key
-// exactly: tenantId -> userId -> conversationId (3 levels), when both tenantId and userId are set.
-database.AddContainer("chat-history", partitionKeyPaths: ["/tenantId", "/userId", "/conversationId"]);
+// New custom transcript schema. The hierarchical partition key isolates each tenant/user/conversation,
+// allowing idempotent create-only message writes and ordered replay within a single logical partition.
+var transcript = database.AddContainer("agent-transcript", partitionKeyPaths: ["/tenantId", "/userId", "/conversationId"]);
 // CosmosConversationIndexStore partitions by userId only (see RecordConversationTurnAsync/ListConversationsAsync).
 database.AddContainer("conversation-index", partitionKeyPath: "/userId");
 // CosmosAgentSessionStore partitions by userId only (see AgentSessionDbContext), storing the small
@@ -92,6 +91,7 @@ var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
     .WithReference(embeddings).WaitFor(embeddings)
     .WithReference(cosmosDb).WaitFor(cosmosDb)
     .WithReference(database).WaitFor(database)
+    .WithReference(transcript).WaitFor(transcript)
     .WithRoleAssignments(foundry, CognitiveServicesBuiltInRole.CognitiveServicesOpenAIUser)
     .WithEnvironment("MODEL_DEPLOYMENT_NAME", FoundryModel.OpenAI.Gpt54Nano.Name)
     .AsHostedAgent(project,
