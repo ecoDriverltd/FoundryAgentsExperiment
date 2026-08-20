@@ -31,7 +31,7 @@ You'll need your own Azure subscription details plugged into user secrets on the
 "Azure:ResourceGroup"
 "Azure:Location"
 
-Are what you need.
+Are what you need. Aspire will provision things like foundry and models in Azure.
 
 You can run the integration tests to get a sense of things working, as well as use the Blazor UI.
 
