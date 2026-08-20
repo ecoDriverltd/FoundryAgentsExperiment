@@ -1,4 +1,4 @@
-## Experiments with Agent Framework/Blazor/Aspire/AG-UI with server managed chat history
+## Experiment with Agent Framework/Blazor/Aspire/AG-UI with server managed chat history
 
 ### The project is an experiment with this combination of technologies:
 
