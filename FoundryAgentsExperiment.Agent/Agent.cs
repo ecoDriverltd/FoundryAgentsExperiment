@@ -1,7 +1,7 @@
 ﻿using Azure.AI.Projects;
 using Azure.Core;
-using FoundryAgentsExperiment.Agent;
 using FoundryAgentsExperiment.Agent.AgentExtensions;
+using FoundryAgentsExperiment.Agent.AgentServices;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Compaction;
 using Microsoft.Agents.AI.Foundry.Hosting;

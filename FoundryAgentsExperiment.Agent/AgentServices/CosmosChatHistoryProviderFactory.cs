@@ -3,7 +3,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 public static class CosmosChatHistoryProviderFactory
 {

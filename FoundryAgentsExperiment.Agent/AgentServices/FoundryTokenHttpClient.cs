@@ -1,7 +1,7 @@
 ﻿using Azure.Core;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace FoundryAgentsExperiment.Agent.AgentExtensions;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 public static class FoundryTokenHttpClient
 {

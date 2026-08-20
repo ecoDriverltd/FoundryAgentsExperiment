@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 /// <summary>
 /// One lightweight document per conversation, stored in a separate container from the full chat

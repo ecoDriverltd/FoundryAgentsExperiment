@@ -4,7 +4,7 @@ using Azure.Core;
 using Azure.Identity;
 using System.Data.Common;
 
-namespace FoundryAgentsExperiment.Agent;
+namespace FoundryAgentsExperiment.Agent.AgentServices;
 
 public sealed record FoundrySettings(Uri ProjectUri, string DeploymentName, string EmbeddingDeploymentName)
 {
