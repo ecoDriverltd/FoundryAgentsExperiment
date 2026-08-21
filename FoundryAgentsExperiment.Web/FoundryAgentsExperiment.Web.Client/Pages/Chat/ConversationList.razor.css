@@ -29,6 +29,7 @@
     padding: 0.6rem 1rem;
     cursor: pointer;
     border-left: 3px solid transparent;
+    position: relative;
 }
 
 .conversation-item:hover {
@@ -51,4 +52,26 @@
     font-size: 0.75rem;
     color: #6c757d;
     margin-top: 0.1rem;
+}
+
+.conversation-delete {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.5rem;
+    border: 0;
+    background: transparent;
+    color: #6c757d;
+    cursor: pointer;
+    font-size: 1.25rem;
+    line-height: 1;
+    opacity: 0;
+}
+
+.conversation-item:hover .conversation-delete,
+.conversation-item.active .conversation-delete {
+    opacity: 1;
+}
+
+.conversation-delete:hover {
+    color: #dc3545;
 }

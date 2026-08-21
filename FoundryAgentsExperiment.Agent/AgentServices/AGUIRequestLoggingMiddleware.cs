@@ -2,6 +2,9 @@ using System.Text.Json;
 
 namespace FoundryAgentsExperiment.Agent.AgentServices;
 
+/// <summary>
+/// Only to be used to debugging and troubleshooting, should not be used in production or for any other purpose.
+/// </summary>
 public static class AGUIRequestLoggingMiddleware
 {
     public static IApplicationBuilder UseAGUIRequestLogging(this IApplicationBuilder app) =>
@@ -36,6 +39,9 @@ public static class AGUIRequestLoggingMiddleware
                         messageCount,
                         messageSummary,
                         context.Request.Headers["x-agent-user-id"].ToString());
+                    context.RequestServices.GetRequiredService<AgUiFailureDiagnostics>().RecordRequest(
+                        context.Request.Headers["x-agent-user-id"].ToString(),
+                        $"threadId={threadId}; runId={runId}; parentRunId={parentRunId}; messageCount={messageCount}; messages={messageSummary}");
                 }
                 catch (JsonException exception)
                 {
@@ -43,7 +49,24 @@ public static class AGUIRequestLoggingMiddleware
                 }
             }
 
-            await next(context);
+            try
+            {
+                await next(context);
+            }
+            catch (Exception exception)
+            {
+                var logger = context.RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("AGUIRequestLogging");
+                logger.LogError(
+                    exception,
+                    "[Wire] POST /ag-ui failed path={Path} userId={UserId}",
+                    context.Request.Path,
+                    context.Request.Headers["x-agent-user-id"].ToString());
+                context.RequestServices.GetRequiredService<AgUiFailureDiagnostics>().Record(
+                    context.Request.Headers["x-agent-user-id"].ToString(),
+                    exception);
+                throw;
+            }
         });
 
     private static string DescribeMessage(JsonElement message)

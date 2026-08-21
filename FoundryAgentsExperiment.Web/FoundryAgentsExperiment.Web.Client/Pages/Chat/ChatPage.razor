@@ -18,29 +18,30 @@
 
 <div class="chat-page">
     <div class="chat-sidebar">
-        <ConversationList Conversations="_conversations"
-                          ActiveConversationId="@_conversationId"
-                          IsLoading="@_isLoadingConversations"
-                          IsLoadingConversation="@_isLoadingConversation"
-                          ShowNewConversationPlaceholder="@(!_hasConversationUrl)"
-                          OnSelected="@ResumeConversationAsync" />
+        <ConversationList Conversations="@conversations"
+                          ActiveConversationId="@conversationId"
+                          IsLoading="@isLoadingConversations"
+                          IsLoadingConversation="@isLoadingConversation"
+                          ShowNewConversationPlaceholder="@(!hasConversationUrl)"
+                           OnSelected="@ResumeConversationAsync"
+                           OnDeleted="@DeleteConversationAsync" />
     </div>
 
     <div class="chat-main">
         <ChatHeader OnNewChat="@StartNewConversation" />
 
-        <ChatMessageList Messages="@_displayMessages" InProgressMessage="@_inProgressMessage">
+        <ChatMessageList Messages="@displayMessages" InProgressMessage="@inProgressMessage">
             <NoMessagesContent>
-                <p>@(_isLoadingConversation ? "Loading conversation…" : "Start a conversation.")</p>
+                <p>@(isLoadingConversation ? "Loading conversation…" : "Start a conversation.")</p>
             </NoMessagesContent>
         </ChatMessageList>
 
         <div class="chat-input-area">
-            <ChatInput @ref="_chatInput"
+            <ChatInput @ref="chatInput"
                        OnSend="@SendMessageAsync"
                        OnStop="@CancelStreaming"
-                       IsStreaming="@_isStreaming"
-                       Disabled="@_isLoadingConversation" />
+                       IsStreaming="@isStreaming"
+                       Disabled="@isLoadingConversation" />
         </div>
     </div>
 </div>
@@ -49,24 +50,23 @@
     [Parameter]
     public string? ConversationId { get; set; }
 
-    private string? _conversationId;
-    private readonly AGUIContinuationState _continuation = new();
-    private ChatClientAgent? _agent;
-    private AgentSession? _session;
-    private bool _isStreaming;
-    private bool _isLoadingConversations = true;
-    private bool _isLoadingConversation;
-    private bool _focusInput;
-    private bool _hasConversationUrl;
-    private string? _loadedConversationId;
+    private string? conversationId;
+    private readonly AGUIContinuationState continuation = new();
+    private ChatClientAgent? agent;
+    private bool isStreaming;
+    private bool isLoadingConversations = true;
+    private bool isLoadingConversation;
+    private bool focusInput;
+    private bool hasConversationUrl;
+    private string? loadedConversationId;
 
-    private readonly List<ChatMessage> _displayMessages = [];
-    private readonly Dictionary<string, string> _functionCallNames = [];
-    private IReadOnlyList<ConversationSummary> _conversations = [];
-    private ChatMessage? _inProgressMessage;
-    private CancellationTokenSource? _streamingCts;
+    private readonly List<ChatMessage> displayMessages = [];
+    private readonly Dictionary<string, string> functionCallNames = [];
+    private IReadOnlyList<ConversationSummary> conversations = [];
+    private ChatMessage? inProgressMessage;
+    private CancellationTokenSource? streamingCts;
 
-    private ChatInput? _chatInput;
+    private ChatInput? chatInput;
 
     private static readonly IReadOnlyDictionary<string, ToolPresentationPolicy> ToolPresentationPolicies =
         new Dictionary<string, ToolPresentationPolicy>(StringComparer.Ordinal)
@@ -74,7 +74,7 @@
             ["get_user_location"] = new(ShowResult: true, HideFollowingAssistantResponse: true),
         };
 
-    private bool _hideFollowingAssistantResponse;
+    private bool hideFollowingAssistantResponse;
 
     protected override async Task OnInitializedAsync()
     {
@@ -88,45 +88,44 @@
         AITool[] frontendTools =
         [
             AIFunctionFactory.Create(Geolocation.GetUserLocationAsync,
-                name: "get_user_location",
-                description: "Get the user's current location from the browser's GPS.")
+            name: "get_user_location",
+            description: "Get the user's current location from the browser's GPS.")
         ];
 
-        _agent = ChatClient.AsAIAgent(name: "agui-client", description: "AG-UI Client Agent", tools: frontendTools);
-        await RefreshConversationsAsync();
+        this.agent = ChatClient.AsAIAgent(name: "agui-client", description: "AG-UI Client Agent", tools: frontendTools);
+        await LoadConversationsAsync();
     }
 
     protected override async Task OnParametersSetAsync()
     {
-        if (!RendererInfo.IsInteractive || ConversationId == _loadedConversationId)
+        if (!RendererInfo.IsInteractive || ConversationId == this.loadedConversationId)
             return;
 
-        _loadedConversationId = ConversationId;
-        _hasConversationUrl = ConversationId is { Length: > 0 };
+        this.loadedConversationId = ConversationId;
+        this.hasConversationUrl = ConversationId is { Length: > 0 };
         if (ConversationId is not { Length: > 0 } conversationId)
             return;
 
         CancelStreaming();
-        _isLoadingConversation = true;
-        _conversationId = conversationId;
-        _session = null;
-        _inProgressMessage = null;
-        _displayMessages.Clear();
-        _functionCallNames.Clear();
-        _hideFollowingAssistantResponse = false;
+        this.isLoadingConversation = true;
+        this.conversationId = conversationId;
+        this.inProgressMessage = null;
+        this.displayMessages.Clear();
+        this.functionCallNames.Clear();
+        this.hideFollowingAssistantResponse = false;
 
         try
         {
             await InvokeAsync(StateHasChanged);
             var conversation = await ConversationClient.GetConversationAsync(conversationId);
-            _continuation.Restore(conversation.ConversationId, conversation.LastRunId);
+            this.continuation.Restore(conversation.ConversationId, previousRunId: null);
 
             foreach (var message in conversation.Messages)
                 AddDisplayMessage(message);
         }
         finally
         {
-            _isLoadingConversation = false;
+            this.isLoadingConversation = false;
         }
     }
 
@@ -135,38 +134,33 @@
         if (!RendererInfo.IsInteractive)
             return;
 
-        if (firstRender || _focusInput)
+        if (firstRender || this.focusInput)
         {
-            _focusInput = false;
-            await _chatInput!.FocusAsync();
+            this.focusInput = false;
+            await this.chatInput!.FocusAsync();
         }
     }
 
     private async Task SendMessageAsync(string userText)
     {
         CancelStreaming();
-        _hideFollowingAssistantResponse = false;
+        this.hideFollowingAssistantResponse = false;
 
         // Add to display list immediately
         var userMessage = new ChatMessage(ChatRole.User, userText)
         {
             MessageId = Guid.NewGuid().ToString("N"),
         };
-        _displayMessages.Add(userMessage);
+        this.displayMessages.Add(userMessage);
 
         // The server loads its own Cosmos-managed transcript; send only the fresh turn.
-        if (_continuation.ThreadId is null)
-        {
-            _conversationId = Guid.NewGuid().ToString("N");
-            _continuation.InitializeThread(_conversationId);
-        }
-
         var responseText = new TextContent(string.Empty);
-        _inProgressMessage = new ChatMessage(ChatRole.Assistant, [responseText]);
-        _isStreaming = true;
-        var inProgressMessage = _inProgressMessage;
-        var streamingCts = new CancellationTokenSource();
-        _streamingCts = streamingCts;
+        this.inProgressMessage = new ChatMessage(ChatRole.Assistant, [responseText]);
+        this.isStreaming = true;
+        var streamingMessage = this.inProgressMessage;
+        var requestCancellation = new CancellationTokenSource();
+        this.streamingCts = requestCancellation;
+        var completed = false;
 
         // Render the assistant bubble + typing indicator immediately - otherwise nothing shows
         // until the first network round-trip (session creation, then the first streamed chunk)
@@ -175,21 +169,29 @@
 
         try
         {
-            _session ??= await _agent!.CreateSessionAsync(streamingCts.Token);
+            // This session exists only while handling this user message, including any client-tool
+            // requests that occur before the response completes. ChatClientAgent stores streamed
+            // messages in it, so retaining it would replay old messages. Cosmos owns conversation
+            // history; ThreadId and ParentRunId resume that hosted conversation for the next message.
+            var session = await this.agent!.CreateSessionAsync(requestCancellation.Token);
 
             List<ChatMessage> messages =
             [
                 userMessage
             ];
 
-            await foreach (var update in _agent!.RunStreamingAsync(messages, _session, _continuation.CreateRunOptions(), streamingCts.Token))
+            await foreach (var update in this.agent!.RunStreamingAsync(
+                messages,
+                session,
+                options: this.continuation.CreateRunOptions(),
+                cancellationToken: requestCancellation.Token))
             {
-                _continuation.Observe(update);
+                this.continuation.Observe(update);
 
-                if (!_hasConversationUrl && _continuation.ThreadId is { Length: > 0 } threadId)
+                if (!this.hasConversationUrl && this.continuation.ThreadId is { Length: > 0 } threadId)
                 {
-                    _conversationId = threadId;
-                    _hasConversationUrl = true;
+                    this.conversationId = threadId;
+                    this.hasConversationUrl = true;
                     await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/chat/{threadId}");
                 }
 
@@ -198,14 +200,13 @@
                     switch (content)
                     {
                         case TextContent text:
-                            if (!_hideFollowingAssistantResponse)
+                            if (!this.hideFollowingAssistantResponse)
                             {
                                 responseText.Text += text.Text;
-                                ChatMessageItem.NotifyChanged(inProgressMessage);
                             }
                             break;
                         case FunctionCallContent call:
-                            _functionCallNames[call.CallId] = call.Name;
+                            this.functionCallNames[call.CallId] = call.Name;
                             break;
                         case FunctionResultContent result:
                             AddVisibleToolResult(result);
@@ -215,6 +216,8 @@
 
                 await InvokeAsync(StateHasChanged);
             }
+
+            completed = true;
         }
         catch (OperationCanceledException)
         {
@@ -222,61 +225,71 @@
         }
         finally
         {
-            if (ReferenceEquals(_streamingCts, streamingCts))
+            if (ReferenceEquals(this.streamingCts, requestCancellation))
             {
-                if (!string.IsNullOrWhiteSpace(inProgressMessage.Text))
-                    _displayMessages.Add(inProgressMessage);
-                _inProgressMessage = null;
-                _isStreaming = false;
-                _streamingCts = null;
-                _focusInput = true;
+                if (!string.IsNullOrWhiteSpace(streamingMessage.Text))
+                    this.displayMessages.Add(streamingMessage);
 
-                if (_conversationId is { Length: > 0 } conversationId &&
-                    _continuation.PreviousRunId is { Length: > 0 } runId)
-                {
-                    await ConversationClient.UpdateContinuationAsync(conversationId, runId, userMessage.Text);
-                    await RefreshConversationsAsync();
-                }
+                this.inProgressMessage = null;
+                this.isStreaming = false;
+                this.streamingCts = null;
+                this.focusInput = true;
+
+                if (completed)
+                    UpdateConversationSummary(userMessage.Text);
 
                 await InvokeAsync(StateHasChanged);
             }
 
-            streamingCts.Dispose();
+            requestCancellation.Dispose();
         }
     }
 
     private void StartNewConversation()
     {
         CancelStreaming();
-        _conversationId = null;
-        _continuation.Reset();
-        _hasConversationUrl = false;
-        _session = null;
-        _displayMessages.Clear();
-        _functionCallNames.Clear();
-        _hideFollowingAssistantResponse = false;
-        _inProgressMessage = null;
+        this.conversationId = null;
+        this.continuation.Reset();
+        this.hasConversationUrl = false;
+        this.displayMessages.Clear();
+        this.functionCallNames.Clear();
+        this.hideFollowingAssistantResponse = false;
+        this.inProgressMessage = null;
         Nav.NavigateTo("/chat");
     }
 
     private async Task ResumeConversationAsync(ConversationSummary conversation)
     {
         CancelStreaming();
-        _conversationId = conversation.Id;
-        _session = null;
-        _displayMessages.Clear();
-        _functionCallNames.Clear();
-        _hideFollowingAssistantResponse = false;
-        _inProgressMessage = null;
-        _isLoadingConversation = true;
+        this.conversationId = conversation.Id;
+        this.displayMessages.Clear();
+        this.functionCallNames.Clear();
+        this.hideFollowingAssistantResponse = false;
+        this.inProgressMessage = null;
+        this.isLoadingConversation = true;
         Nav.NavigateTo($"/chat/{conversation.Id}");
         await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task DeleteConversationAsync(ConversationSummary conversation)
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", $"Delete '{conversation.Title}'?");
+        if (!confirmed)
+            return;
+
+        await ConversationClient.DeleteConversationAsync(conversation.Id);
+        this.conversations = this.conversations
+            .Where(item => item.Id != conversation.Id)
+            .ToList();
+
+        if (this.conversationId == conversation.Id)
+            StartNewConversation();
     }
 
     private void AddDisplayMessage(ChatMessage message)
     {
         foreach (var call in message.Contents.OfType<FunctionCallContent>())
-            _functionCallNames[call.CallId] = call.Name;
+            this.functionCallNames[call.CallId] = call.Name;
 
         foreach (var result in message.Contents.OfType<FunctionResultContent>())
             AddVisibleToolResult(result);
@@ -284,58 +297,89 @@
         if ((message.Role == ChatRole.User || message.Role == ChatRole.Assistant) &&
             message.Contents.OfType<TextContent>().Any(content => !string.IsNullOrWhiteSpace(content.Text)))
         {
-            if (message.Role == ChatRole.Assistant && _hideFollowingAssistantResponse)
+            if (message.Role == ChatRole.Assistant && this.hideFollowingAssistantResponse)
             {
-                _hideFollowingAssistantResponse = false;
+                this.hideFollowingAssistantResponse = false;
             }
             else
             {
-                _displayMessages.Add(message);
+                this.displayMessages.Add(message);
             }
         }
     }
 
     private void AddVisibleToolResult(FunctionResultContent result)
     {
-        if (_functionCallNames.TryGetValue(result.CallId, out var toolName) &&
+        if (this.functionCallNames.TryGetValue(result.CallId, out var toolName) &&
             ToolPresentationPolicies.TryGetValue(toolName, out var policy))
         {
             if (policy.ShowResult)
-                _displayMessages.Add(new ChatMessage(ChatRole.Tool, $"✅ {result.Result}"));
+                this.displayMessages.Add(new ChatMessage(ChatRole.Tool, $"✅ {result.Result}"));
 
-            _hideFollowingAssistantResponse = policy.HideFollowingAssistantResponse;
+            this.hideFollowingAssistantResponse = policy.HideFollowingAssistantResponse;
+            return;
         }
+
+        this.displayMessages.Add(new ChatMessage(ChatRole.Tool, $"🔧 {toolName ?? "Tool"}: {result.Result}"));
     }
 
-    private async Task RefreshConversationsAsync() =>
-        await LoadConversationsAsync();
+    private void UpdateConversationSummary(string? initialUserText)
+    {
+        if (this.conversationId is not { Length: > 0 } currentConversationId)
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        var existing = this.conversations.FirstOrDefault(conversation => conversation.Id == currentConversationId);
+        var updatedConversation = existing is null
+            ? new ConversationSummary(
+                currentConversationId,
+                Truncate(initialUserText, 60) ?? "New conversation",
+                now,
+                now)
+            : existing with { LastUpdatedAt = now };
+
+        this.conversations = [
+            updatedConversation,
+            .. this.conversations.Where(conversation => conversation.Id != currentConversationId),
+        ];
+
+    }
+
+    private static string? Truncate(string? text, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var trimmed = text.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength] + "...";
+    }
 
     private async Task LoadConversationsAsync()
     {
-        _isLoadingConversations = true;
+        this.isLoadingConversations = true;
         try
         {
             await InvokeAsync(StateHasChanged);
-            _conversations = await ConversationClient.GetConversationsAsync();
+            this.conversations = await ConversationClient.GetConversationsAsync();
         }
         finally
         {
-            _isLoadingConversations = false;
+            this.isLoadingConversations = false;
         }
     }
 
     private void CancelStreaming()
     {
-        if (_inProgressMessage is { Text.Length: > 0 })
-            _displayMessages.Add(_inProgressMessage);
+        if (this.inProgressMessage is { Text.Length: > 0 })
+            this.displayMessages.Add(this.inProgressMessage);
 
-        _streamingCts?.Cancel();
-        _streamingCts = null;
-        _inProgressMessage = null;
-        _isStreaming = false;
+        this.streamingCts?.Cancel();
+        this.streamingCts = null;
+        this.inProgressMessage = null;
+        this.isStreaming = false;
     }
 
-    public void Dispose() => _streamingCts?.Cancel();
+    public void Dispose() => this.streamingCts?.Cancel();
 
     private sealed record ToolPresentationPolicy(bool ShowResult, bool HideFollowingAssistantResponse);
 }

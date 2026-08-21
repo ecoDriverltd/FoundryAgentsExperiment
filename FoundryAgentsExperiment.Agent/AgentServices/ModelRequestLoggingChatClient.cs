@@ -13,9 +13,19 @@ internal sealed class ModelRequestLoggingChatClient(IChatClient innerClient, ILo
         CancellationToken cancellationToken = default)
     {
         var request = messages.ToList();
-        LogStart("non-streaming", request);
+        LogStart("non-streaming", request, options);
+        LogUnmatchedFunctionCalls("non-streaming", request);
 
-        var response = await base.GetResponseAsync(request, options, cancellationToken);
+        ChatResponse response;
+        try
+        {
+            response = await base.GetResponseAsync(request, options, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            throw CreateRequestException("non-streaming", request, options, exception);
+        }
+
         LogFunctionCalls("non-streaming", response.Messages.SelectMany(message => message.Contents));
         LogCompleted("non-streaming");
         return response;
@@ -27,23 +37,32 @@ internal sealed class ModelRequestLoggingChatClient(IChatClient innerClient, ILo
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var request = messages.ToList();
-        LogStart("streaming", request);
+        LogStart("streaming", request, options);
+        LogUnmatchedFunctionCalls("streaming", request);
 
-        await foreach (var update in base.GetStreamingResponseAsync(request, options, cancellationToken))
+        await using var enumerator = base.GetStreamingResponseAsync(request, options, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+        while (true)
         {
-            LogFunctionCalls("streaming", update.Contents);
+            if (!await MoveNextAsync(enumerator, request, options))
+            {
+                break;
+            }
 
+            var update = enumerator.Current;
+            LogFunctionCalls("streaming", update.Contents);
             yield return update;
         }
 
         LogCompleted("streaming");
     }
 
-    private void LogStart(string mode, IReadOnlyCollection<ChatMessage> messages) =>
+    private void LogStart(string mode, IReadOnlyCollection<ChatMessage> messages, ChatOptions? options) =>
         Log(
-            "[Model] Start mode={Mode} traceId={TraceId} messageCount={MessageCount} messages={Messages}",
+            "[Model] Start mode={Mode} traceId={TraceId} conversationId={ConversationId} messageCount={MessageCount} messages={Messages}",
             mode,
             System.Diagnostics.Activity.Current?.TraceId.ToString() ?? "<none>",
+            options?.ConversationId ?? "<none>",
             messages.Count,
             DescribeMessages(messages));
 
@@ -62,6 +81,28 @@ internal sealed class ModelRequestLoggingChatClient(IChatClient innerClient, ILo
         }
     }
 
+    private void LogUnmatchedFunctionCalls(string mode, IReadOnlyCollection<ChatMessage> messages)
+    {
+        var functionCallIds = messages
+            .SelectMany(message => message.Contents.OfType<FunctionCallContent>())
+            .Select(call => call.CallId)
+            .ToHashSet(StringComparer.Ordinal);
+        var functionResultIds = messages
+            .SelectMany(message => message.Contents.OfType<FunctionResultContent>())
+            .Select(result => result.CallId)
+            .ToHashSet(StringComparer.Ordinal);
+        var unmatchedCallIds = functionCallIds.Except(functionResultIds, StringComparer.Ordinal).ToArray();
+
+        if (unmatchedCallIds.Length > 0)
+        {
+            Log(
+                "[Model] Unmatched function calls mode={Mode} traceId={TraceId} callIds={CallIds}",
+                mode,
+                System.Diagnostics.Activity.Current?.TraceId.ToString() ?? "<none>",
+                string.Join(",", unmatchedCallIds));
+        }
+    }
+
     private void LogCompleted(string mode) =>
         Log(
             "[Model] Completed mode={Mode} traceId={TraceId}",
@@ -72,6 +113,31 @@ internal sealed class ModelRequestLoggingChatClient(IChatClient innerClient, ILo
     {
         logger.LogInformation(message, arguments);
         Console.WriteLine($"{message} | {string.Join(", ", arguments.Select(argument => argument?.ToString() ?? "<null>"))}");
+    }
+
+    private static InvalidOperationException CreateRequestException(
+        string mode,
+        IReadOnlyCollection<ChatMessage> messages,
+        ChatOptions? options,
+        Exception exception) =>
+        new(
+            $"Model {mode} request failed. ConversationId={options?.ConversationId ?? "<none>"}; " +
+            $"messages={DescribeMessages(messages)}",
+            exception);
+
+    private static async ValueTask<bool> MoveNextAsync(
+        IAsyncEnumerator<ChatResponseUpdate> enumerator,
+        IReadOnlyCollection<ChatMessage> messages,
+        ChatOptions? options)
+    {
+        try
+        {
+            return await enumerator.MoveNextAsync();
+        }
+        catch (Exception exception)
+        {
+            throw CreateRequestException("streaming", messages, options, exception);
+        }
     }
 
     private static string DescribeMessages(IEnumerable<ChatMessage> messages) =>

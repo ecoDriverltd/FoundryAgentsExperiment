@@ -1,5 +1,5 @@
-using System.Net.Http.Json;
 using FoundryAgentsExperiment.Shared.Models;
+using System.Net.Http.Json;
 
 namespace FoundryAgentsExperiment.Web.Client.Services;
 
@@ -12,16 +12,9 @@ public sealed class AgentConversationClient(HttpClient http)
         await http.GetFromJsonAsync<ConversationDetail>($"agent/conversations/{Uri.EscapeDataString(conversationId)}", cancellationToken)
             ?? throw new InvalidOperationException("The agent returned an empty conversation response.");
 
-    public async Task UpdateContinuationAsync(
-        string conversationId,
-        string runId,
-        string? initialUserPrompt,
-        CancellationToken cancellationToken = default)
+    public async Task DeleteConversationAsync(string conversationId, CancellationToken cancellationToken = default)
     {
-        using var response = await http.PutAsJsonAsync(
-            $"agent/conversations/{Uri.EscapeDataString(conversationId)}/continuation",
-            new UpdateConversationContinuationRequest(runId, initialUserPrompt),
-            cancellationToken);
+        using var response = await http.DeleteAsync($"agent/conversations/{Uri.EscapeDataString(conversationId)}", cancellationToken);
         response.EnsureSuccessStatusCode();
     }
 }

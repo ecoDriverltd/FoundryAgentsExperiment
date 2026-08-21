@@ -30,6 +30,13 @@
                  aria-busy="@(IsLoadingConversation && conversation.Id == ActiveConversationId)">
                 <div class="conversation-title">@conversation.Title</div>
                 <div class="conversation-date">@FormatDate(conversation.LastUpdatedAt)</div>
+                <button type="button"
+                        class="conversation-delete"
+                        title="Delete conversation"
+                        @onclick="@(() => OnDeleted.InvokeAsync(conversation))"
+                        @onclick:stopPropagation="true">
+                    ×
+                </button>
             </div>
         }
     }
@@ -44,6 +51,9 @@
 
     [Parameter]
     public EventCallback<ConversationSummary> OnSelected { get; set; }
+
+    [Parameter]
+    public EventCallback<ConversationSummary> OnDeleted { get; set; }
 
     [Parameter]
     public bool IsLoading { get; set; }

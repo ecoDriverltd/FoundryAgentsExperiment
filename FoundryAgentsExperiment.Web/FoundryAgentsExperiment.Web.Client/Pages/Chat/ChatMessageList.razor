@@ -1,6 +1,6 @@
 @inject IJSRuntime JS
 
-<div class="message-list-container" @ref="_container">
+<div class="message-list-container" @ref="container">
     <div class="message-list">
         @foreach (var message in Messages.Where(IsDisplayableMessage))
         {
@@ -24,7 +24,7 @@
 </div>
 
 @code {
-    private ElementReference _container;
+    private ElementReference container;
 
     [Parameter]
     public required IEnumerable<ChatMessage> Messages { get; set; }
