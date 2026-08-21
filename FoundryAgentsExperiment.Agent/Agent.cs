@@ -75,6 +75,7 @@ builder.Services.AddSingleton<AgentIsolationKeyProvider, AgentUserIdIsolationKey
 // FoundryBackedAgentSessionStore (not the unrelated x-memory-user-id header used by the hosted
 // memory-search *tool* on versioned Foundry agents).
 var memoryProvider = await projectClient.GetFoundryMemoryProviderAsync(agentName, httpContextAccessor, foundrySettings);
+var enableFoundryMemory = builder.Configuration.GetValue<bool>("EnableFoundryMemory");
 
 // Create a POC toolbox/skill/mcp skill provider for the agent to use. The Foundry MCP server handles skill invocation and approval.
 // NOTE: this HttpClient must live for the app's lifetime (skillsProvider/agent use it per request via
@@ -104,7 +105,9 @@ var modelChatClient = new ModelRequestLoggingChatClient(projectClient
 
 AIAgent agent = modelChatClient
     .AsBuilder()
-    .UseAIContextProviders(compactionProvider)
+    .UseAIContextProviders(enableFoundryMemory
+        ? [compactionProvider, memoryProvider]
+        : [compactionProvider])
     .BuildAIAgent(new ChatClientAgentOptions
     {
         ChatOptions = new()
@@ -121,11 +124,7 @@ AIAgent agent = modelChatClient
             )]
         },
         Name = agentName,
-        //RequirePerServiceCallChatHistoryPersistence = true,
-        AIContextProviders = [
-            //memoryProvider,
-            skillsProvider
-        ]
+        AIContextProviders = [skillsProvider]
     });
 
 builder.AddAIAgent(agentName, (_, _) => agent)

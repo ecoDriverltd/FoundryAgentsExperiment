@@ -47,8 +47,8 @@ public sealed class AgentSessionDbContext(DbContextOptions<AgentSessionDbContext
 /// AG-UI-facing <see cref="AgentSessionStore"/>. It persists the complete serialized
 /// <see cref="AgentSession"/> by AG-UI thread ID and user ID, including the framework-managed
 /// in-memory chat history used to resume model conversations.
-/// Cosmos items are limited to 2 MB; compaction-state persistence has not yet been proven and
-/// requires a separate retention and archival design before production use.
+/// Cosmos items are limited to 2 MB; compaction-state persistence has been validated, but durable
+/// transcript retention remains bounded by this store's UTF-8 byte-limit enforcement.
 /// </summary>
 public sealed class CosmosAgentSessionStore(
     IServiceScopeFactory scopeFactory,

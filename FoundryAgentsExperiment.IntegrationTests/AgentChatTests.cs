@@ -40,9 +40,11 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     private string? cosmosConnectionString;
     private string? previousCompactionTriggerTokens;
     private string? previousCompactionMinimumPreservedGroups;
+    private string? previousEnableFoundryMemory;
 
     private const string CompactionTriggerTokensEnvironmentVariable = "SessionPersistence__CompactionTriggerTokens";
     private const string CompactionMinimumPreservedGroupsEnvironmentVariable = "SessionPersistence__CompactionMinimumPreservedGroups";
+    private const string EnableFoundryMemoryEnvironmentVariable = "EnableFoundryMemory";
 
     // Aspire's Cosmos resource re-runs its ARM deployment (Bicep) on every AppHost start even when the
     // underlying account already exists, to reconcile any container/config changes (e.g. the
@@ -70,8 +72,10 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Environment.SetEnvironmentVariable("DOTNET_MODIFIABLE_ASSEMBLIES", null);
         this.previousCompactionTriggerTokens = Environment.GetEnvironmentVariable(CompactionTriggerTokensEnvironmentVariable);
         this.previousCompactionMinimumPreservedGroups = Environment.GetEnvironmentVariable(CompactionMinimumPreservedGroupsEnvironmentVariable);
+        this.previousEnableFoundryMemory = Environment.GetEnvironmentVariable(EnableFoundryMemoryEnvironmentVariable);
         Environment.SetEnvironmentVariable(CompactionTriggerTokensEnvironmentVariable, "512");
         Environment.SetEnvironmentVariable(CompactionMinimumPreservedGroupsEnvironmentVariable, "2");
+        Environment.SetEnvironmentVariable(EnableFoundryMemoryEnvironmentVariable, "true");
 
         var appBuilder = await DistributedApplicationTestingBuilder
             .CreateAsync<Projects.FoundryAgentsExperiment_AppHost>(
@@ -148,6 +152,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 
         Environment.SetEnvironmentVariable(CompactionTriggerTokensEnvironmentVariable, this.previousCompactionTriggerTokens);
         Environment.SetEnvironmentVariable(CompactionMinimumPreservedGroupsEnvironmentVariable, this.previousCompactionMinimumPreservedGroups);
+        Environment.SetEnvironmentVariable(EnableFoundryMemoryEnvironmentVariable, this.previousEnableFoundryMemory);
 
         await DeleteTestSessionsAsync(TestContext.Current.CancellationToken);
     }
@@ -399,6 +404,26 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var functionResult = Assert.Single(functionResults);
         Assert.Equal(streamedToolResult.CallId, functionResult.GetProperty("callId").GetString());
         Assert.False(ContainsPendingToolApprovalRequest(stateBag), DescribeRawPersistedHistory(messages));
+    }
+
+    [Fact]
+    public async Task FoundryMemorySearchContextIsNotPersistedForOrdinaryConversation()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var agent = CreateAGUIAgent(userId);
+        var continuation = new AGUIContinuationState();
+        var fact = $"My unique memory marker is cobalt-{Guid.NewGuid():N}.";
+
+        await RunTurnAsync(agent, continuation, userId, fact, ct);
+        await RunTurnAsync(agent, continuation, userId, "What is my unique memory marker?", ct);
+        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId));
+
+        using var persistedSession = await ReadPersistedSessionAsync(userId, continuation.ThreadId!, ct);
+        var stateBag = persistedSession.RootElement.GetProperty("stateBag");
+        Assert.False(
+            ContainsFoundryMemoryContext(stateBag),
+            $"Foundry memory search context was persisted in the server session.{Environment.NewLine}{stateBag.GetRawText()}");
     }
 
     [Fact]
@@ -843,6 +868,46 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             foreach (var item in element.EnumerateArray())
             {
                 if (ContainsPendingToolApprovalRequest(item))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsFoundryMemoryContext(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.NameEquals("text") &&
+                    property.Value.ValueKind == JsonValueKind.String &&
+                    property.Value.GetString()?.Contains("## Memories", StringComparison.Ordinal) == true)
+                {
+                    return true;
+                }
+
+                if (property.NameEquals("sourceId") &&
+                    property.Value.ValueKind == JsonValueKind.String &&
+                    property.Value.GetString() == "Microsoft.Agents.AI.Foundry.FoundryMemoryProvider")
+                {
+                    return true;
+                }
+
+                if (ContainsFoundryMemoryContext(property.Value))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (ContainsFoundryMemoryContext(item))
                 {
                     return true;
                 }
