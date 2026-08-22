@@ -648,19 +648,36 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             return;
 
         using var cosmosClient = new CosmosClient(cosmosConnectionString, GetCredential());
-        var container = cosmosClient.GetContainer("agent-history", "agent-sessions");
+        var sessionContainer = cosmosClient.GetContainer("agent-history", "agent-sessions");
+        var historyContainer = cosmosClient.GetContainer("agent-history", "agent-chat-history");
 
         foreach (var userId in testUserIds)
         {
             var query = new QueryDefinition("SELECT c.id FROM c WHERE c.userId = @userId")
                 .WithParameter("@userId", userId);
-            using var iterator = container.GetItemQueryIterator<PersistedSessionId>(query);
+            using var iterator = sessionContainer.GetItemQueryIterator<PersistedSessionId>(query);
 
             while (iterator.HasMoreResults)
             {
                 foreach (var session in await iterator.ReadNextAsync(cancellationToken))
                 {
-                    await container.DeleteItemAsync<PersistedSessionId>(
+                    var historyQuery = new QueryDefinition("SELECT c.id FROM c WHERE c.conversationId = @conversationId")
+                        .WithParameter("@conversationId", session.Id);
+                    using var historyIterator = historyContainer.GetItemQueryIterator<PersistedSessionId>(
+                        historyQuery,
+                        requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(session.Id) });
+                    while (historyIterator.HasMoreResults)
+                    {
+                        foreach (var historyItem in await historyIterator.ReadNextAsync(cancellationToken))
+                        {
+                            await historyContainer.DeleteItemAsync<PersistedSessionId>(
+                                historyItem.Id,
+                                new PartitionKey(session.Id),
+                                cancellationToken: cancellationToken);
+                        }
+                    }
+
+                    await sessionContainer.DeleteItemAsync<PersistedSessionId>(
                         session.Id,
                         new PartitionKey(userId),
                         cancellationToken: cancellationToken);
@@ -762,25 +779,28 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         CancellationToken cancellationToken)
     {
         using var cosmosClient = new CosmosClient(cosmosConnectionString, GetCredential());
-        var container = cosmosClient.GetContainer("agent-history", "agent-sessions");
-        var response = await container.ReadItemAsync<PersistedSessionDocument>(
-            threadId,
-            new PartitionKey(userId),
-            cancellationToken: cancellationToken);
-        using var session = JsonDocument.Parse(response.Resource.SerializedSession);
-        var messages = session.RootElement
-            .GetProperty("stateBag")
-            .GetProperty("InMemoryChatHistoryProvider")
-            .GetProperty("messages")
-            .EnumerateArray()
-            .Select(message => new PersistedHistoryMessage(
-                message.TryGetProperty("role", out var roleProperty) ? roleProperty.GetString() ?? "<none>" : "<none>",
-                message.TryGetProperty("messageId", out var idProperty) ? idProperty.GetString() : null,
-                message.TryGetProperty("contents", out var contents)
-                    ? string.Join(" | ", contents.EnumerateArray().Select(content =>
-                        content.TryGetProperty("text", out var textProperty) ? textProperty.GetString() : content.GetRawText()))
-                    : "<no contents>"))
-            .ToList();
+        var container = cosmosClient.GetContainer("agent-history", "agent-chat-history");
+        var query = new QueryDefinition(
+                "SELECT VALUE c.message FROM c WHERE c.conversationId = @conversationId ORDER BY c.timestamp")
+            .WithParameter("@conversationId", threadId);
+        using var iterator = container.GetItemQueryIterator<string>(
+            query,
+            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(threadId) });
+        var messages = new List<PersistedHistoryMessage>();
+        while (iterator.HasMoreResults)
+        {
+            foreach (var serializedMessage in await iterator.ReadNextAsync(cancellationToken))
+            {
+                using var message = JsonDocument.Parse(serializedMessage);
+                messages.Add(new PersistedHistoryMessage(
+                    message.RootElement.TryGetProperty("role", out var roleProperty) ? roleProperty.GetString() ?? "<none>" : "<none>",
+                    message.RootElement.TryGetProperty("messageId", out var idProperty) ? idProperty.GetString() : null,
+                    message.RootElement.TryGetProperty("contents", out var contents)
+                        ? string.Join(" | ", contents.EnumerateArray().Select(content =>
+                            content.TryGetProperty("text", out var textProperty) ? textProperty.GetString() : content.GetRawText()))
+                        : "<no contents>"));
+            }
+        }
 
         output.WriteLine(DescribePersistedHistory(checkpoint, messages));
         return messages;

@@ -27,6 +27,8 @@ public sealed record AgentSessionEntry(
 /// </summary>
 public sealed class AgentSessionDbContext(DbContextOptions<AgentSessionDbContext> options) : DbContext(options)
 {
+    public const string ConversationIdStateBagKey = "ag-ui-thread-id";
+
     public DbSet<AgentSessionEntry> Sessions => Set<AgentSessionEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -56,6 +58,8 @@ public sealed class CosmosAgentSessionStore(
     ILogger<CosmosAgentSessionStore> logger,
     IOptions<SessionPersistenceOptions> options) : AgentSessionStore
 {
+    public const string AgUiThreadIdStateBagKey = "AgUiThreadId";
+
     private readonly SessionPersistenceOptions options = options.Value;
 
     public override async ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string conversationId, CancellationToken cancellationToken = default)
@@ -87,11 +91,13 @@ public sealed class CosmosAgentSessionStore(
             LogSerializedSession("loaded", threadId, existing.SerializedSession, Encoding.UTF8.GetByteCount(existing.SerializedSession));
             using var document = JsonDocument.Parse(existing.SerializedSession);
             var restoredSession = await agent.DeserializeSessionAsync(document.RootElement.Clone(), cancellationToken: cancellationToken);
+            restoredSession.StateBag.SetValue(AgUiThreadIdStateBagKey, threadId);
             LogInMemoryChatHistory("restored", threadId, restoredSession);
             return restoredSession;
         }
 
         var session = await agent.CreateSessionAsync(cancellationToken);
+        session.StateBag.SetValue(AgUiThreadIdStateBagKey, threadId);
         logger.LogInformation(
             "[SessionStore] Created new session threadId={ThreadId} userId={UserId} conversationId={ConversationId}",
             threadId,
@@ -128,7 +134,7 @@ public sealed class CosmosAgentSessionStore(
 
         if (existing is null)
         {
-            var title = GetConversationTitle(session);
+            var title = GetConversationTitle(serializedText);
             logger.LogInformation(
                 "[SessionStore] Inserting session threadId={ThreadId} userId={UserId} title={Title} serializedBytes={SerializedBytes}",
                 threadId,
@@ -155,7 +161,7 @@ public sealed class CosmosAgentSessionStore(
                 return;
             }
 
-            var title = GetConversationTitle(session, existing.Title);
+            var title = GetConversationTitle(serializedText, existing.Title);
             logger.LogInformation(
                 "[SessionStore] Updating session threadId={ThreadId} userId={UserId} title={Title} serializedBytes={SerializedBytes}",
                 threadId,
@@ -234,11 +240,13 @@ public sealed class CosmosAgentSessionStore(
             return null;
         }
 
-        logger.LogInformation("[SessionStore] Extracting transcript from session conversationId={ConversationId}", conversationId);
+        logger.LogInformation("[SessionStore] Loading transcript through the configured history provider conversationId={ConversationId}", conversationId);
         using var document = JsonDocument.Parse(entry.SerializedSession);
         var session = await agent.DeserializeSessionAsync(document.RootElement.Clone(), cancellationToken: cancellationToken);
-        LogInMemoryChatHistory("transcript extraction", conversationId, session);
-        return session.TryGetInMemoryChatHistory(out List<ChatMessage>? messages) ? messages : [];
+        var chatHistoryProvider = agent.GetService<ChatHistoryProvider>()
+            ?? throw new InvalidOperationException("The agent does not expose a chat history provider.");
+        var invokingContext = new ChatHistoryProvider.InvokingContext(agent, session, requestMessages: []);
+        return (await chatHistoryProvider.InvokingAsync(invokingContext, cancellationToken)).ToList();
     }
 
     public override async ValueTask DeleteSessionAsync(AIAgent agent, string conversationId, CancellationToken cancellationToken = default)
@@ -267,17 +275,34 @@ public sealed class CosmosAgentSessionStore(
             : conversationId;
     }
 
-    private static string GetConversationTitle(AgentSession session, string? existingTitle = null)
+    private static string GetConversationTitle(string serializedSession, string? existingTitle = null)
     {
         if (!string.IsNullOrWhiteSpace(existingTitle) && existingTitle != "New conversation")
         {
             return existingTitle;
         }
 
-        var firstUserText = session.TryGetInMemoryChatHistory(out List<ChatMessage>? messages)
-            ? messages.FirstOrDefault(message => message.Role == ChatRole.User)?.Text
-            : null;
+        using var document = JsonDocument.Parse(serializedSession);
+        var firstUserText = TryGetFirstCompactionUserText(document.RootElement);
         return Truncate(firstUserText, 60) ?? existingTitle ?? "New conversation";
+    }
+
+    private static string? TryGetFirstCompactionUserText(JsonElement session)
+    {
+        if (!session.TryGetProperty("stateBag", out var stateBag) ||
+            !stateBag.TryGetProperty("SummarizationCompactionStrategy", out var compactionState) ||
+            !compactionState.TryGetProperty("messagegroups", out var messageGroups))
+        {
+            return null;
+        }
+
+        return messageGroups
+            .EnumerateArray()
+            .Where(group => group.TryGetProperty("kind", out var kind) && kind.GetString() == "User")
+            .SelectMany(group => group.GetProperty("messages").EnumerateArray())
+            .SelectMany(message => message.GetProperty("contents").EnumerateArray())
+            .Select(content => content.TryGetProperty("text", out var text) ? text.GetString() : null)
+            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
     }
 
     private static string? Truncate(string? text, int maxLength)

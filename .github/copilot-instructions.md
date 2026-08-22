@@ -2,12 +2,13 @@
 
 ## Project Guidelines
 
-- Keep AG-UI request logging/debugging middleware strictly diagnostic and non-functional. Do not make application behavior, session persistence, or history continuity depend on it; prefer standard sample-aligned infrastructure with minimal bespoke behavior.
+- Keep AG-UI request logging/debugging middleware strictly diagnostic and non-functional. Never use AGUIRequestLoggingMiddleware for functional application behavior, persistence identity, or data flow; it is diagnostics-only. Do not make application behavior, session persistence, or history continuity depend on it; prefer standard sample-aligned infrastructure with minimal bespoke behavior.
 - Keep functional design contained in the relevant provider/factory or explicit application components.
 
 ## Agent Memory Management
 
 - Retain broad conversational context, including user topics and assistant recommendations, while excluding system prompts, instructions, tool definitions, and tool/protocol content that is relayed separately.
+- For session/conversation persistence and end-to-end AG-UI behavior, use empirical evidence from this application's live flow rather than assumptions or generic Agent Framework patterns. AG-UI multiple runs within one turn may differ from standard patterns and must be tested before adopting a design.
 
 ## AG-UI Conversation History Guidelines *Important*
 

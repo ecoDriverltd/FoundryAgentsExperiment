@@ -98,6 +98,24 @@ var compactionProvider = new CompactionProvider(
         trigger: CompactionTriggers.TokensExceed(sessionPersistence.CompactionTriggerTokens),
         minimumPreservedGroups: sessionPersistence.CompactionMinimumPreservedGroups));
 
+var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
+    cosmosClient,
+    databaseId: "agent-history",
+    containerId: "agent-chat-history",
+    stateInitializer: session =>
+    {
+        if (session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.AgUiThreadIdStateBagKey, out var threadId) == true &&
+            !string.IsNullOrWhiteSpace(threadId))
+        {
+            return new CosmosChatHistoryProvider.State(threadId);
+        }
+
+        throw new InvalidOperationException("The AG-UI thread ID must be available in the agent session before chat history can be persisted.");
+    });
+var loggingChatHistoryProvider = new LoggingChatHistoryProvider(
+    cosmosChatHistoryProvider,
+    modelRequestLoggerFactory.CreateLogger<LoggingChatHistoryProvider>());
+
 var modelChatClient = new ModelRequestLoggingChatClient(projectClient
     .GetProjectOpenAIClient()
     .GetProjectResponsesClient()
@@ -105,6 +123,7 @@ var modelChatClient = new ModelRequestLoggingChatClient(projectClient
 
 AIAgent agent = modelChatClient
     .AsBuilder()
+    // Important that these providers are at this layer. Compaction and memory change what is sent to the LLM, but shouldn't persist in durable storage.
     .UseAIContextProviders(enableFoundryMemory
         ? [compactionProvider, memoryProvider]
         : [compactionProvider])
@@ -124,6 +143,7 @@ AIAgent agent = modelChatClient
             )]
         },
         Name = agentName,
+        // ChatHistoryProvider = loggingChatHistoryProvider,
         AIContextProviders = [skillsProvider]
     });
 

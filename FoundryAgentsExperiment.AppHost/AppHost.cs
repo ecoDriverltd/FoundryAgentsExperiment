@@ -72,6 +72,7 @@ var database = cosmosDb.AddCosmosDatabase("agent-history");
 // CosmosAgentSessionStore partitions by userId only (see AgentSessionDbContext) and stores both
 // framework session state/history and application-owned conversation metadata.
 database.AddContainer("agent-sessions", partitionKeyPath: "/userId");
+database.AddContainer("agent-chat-history", partitionKeyPath: "/conversationId");
 
 // Register project as foundry hosted agent
 var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
@@ -89,8 +90,8 @@ var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
     .AsHostedAgent(project,
         configure =>
         {
-            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Responses, "2.0.0"));
-            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
+            configure.ProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Responses, "2.0.0"));
+            configure.ProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
         });
 
 if (builder.Environment.IsDevelopment())
