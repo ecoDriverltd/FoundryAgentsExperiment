@@ -89,8 +89,8 @@ var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
     .AsHostedAgent(project,
         configure =>
         {
-            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Responses, "2.0.0"));
-            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
+            configure.ProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Responses, "2.0.0"));
+            configure.ProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
         });
 
 if (builder.Environment.IsDevelopment())

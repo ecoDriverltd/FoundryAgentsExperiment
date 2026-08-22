@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
+﻿<Project Sdk="Aspire.AppHost.Sdk/13.5.2">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -10,8 +10,8 @@
 
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.AgentFramework.DevUI" Version="1.18.0-preview.260818.1" />
-    <PackageReference Include="Aspire.Hosting.Azure.CosmosDB" Version="13.5.0" />
-    <PackageReference Include="Aspire.Hosting.Foundry" Version="13.4.6-preview.1.26319.6" />
+    <PackageReference Include="Aspire.Hosting.Azure.CosmosDB" Version="13.5.2" />
+    <PackageReference Include="Aspire.Hosting.Foundry" Version="13.5.2-preview.1.26421.6" />
     <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.18.0-preview.260818.1" />
   </ItemGroup>
 

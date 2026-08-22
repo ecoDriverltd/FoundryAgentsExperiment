@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Microsoft.EntityFrameworkCore.Cosmos" Version="13.5.0" />
+    <PackageReference Include="Aspire.Microsoft.EntityFrameworkCore.Cosmos" Version="13.5.2" />
     <PackageReference Include="Microsoft.Agents.AI.CosmosNoSql" Version="1.18.0-preview.260818.1" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.18.0" />
     <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.18.0-preview.260818.1" />
