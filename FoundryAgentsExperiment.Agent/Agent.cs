@@ -24,10 +24,8 @@ var sessionPersistence = builder.Configuration
     .GetSection(SessionPersistenceOptions.SectionName)
     .Get<SessionPersistenceOptions>()
     ?? new SessionPersistenceOptions();
-var requirePerServiceCallChatHistoryPersistence = builder.Configuration
-    .GetValue("SessionPersistence:RequirePerServiceCallChatHistoryPersistence", true);
+
 TokenCredential credential = FoundrySettings.GetCredential(builder.Environment);
-//AgentHostBuilder builder = AgentHost.CreateBuilder(args);
 
 if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS"))
     && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("URLS")))
@@ -147,7 +145,7 @@ AIAgent agent = modelChatClient
             )]
         },
         Name = agentName,
-        RequirePerServiceCallChatHistoryPersistence = requirePerServiceCallChatHistoryPersistence, // Defaults to true as compaction plus tool calls seems to result in dropped history otherwise.
+        RequirePerServiceCallChatHistoryPersistence = true, // Defaults to true as compaction plus tool calls seems to result in dropped history otherwise.
         ChatHistoryProvider = chatHistoryProvider,
         AIContextProviders = [skillsProvider]
     });
@@ -176,11 +174,11 @@ catch (Exception ex)
 agentHost.MapFoundryResponses("/v1");
 agentHost.MapOpenAIConversations();
 
-// Optional diagnostics only; this middleware does not affect request processing or persistence.
-agentHost.UseAGUIRequestLogging();
-
 if (agentHost.Environment.IsDevelopment())
 {
+    // Optional diagnostics only; this middleware does not affect request processing or persistence.
+    agentHost.UseAGUIRequestLogging();
+
     agentHost.MapGet("/_diagnostics/ag-ui-failure", (HttpContext context, [FromServices] AgUiFailureDiagnostics diagnostics) =>
     {
         var userId = context.Request.Headers["x-agent-user-id"].ToString();
