@@ -246,7 +246,7 @@ public sealed class CosmosAgentSessionStore(
         var chatHistoryProvider = agent.GetService<ChatHistoryProvider>()
             ?? throw new InvalidOperationException("The agent does not expose a chat history provider.");
         var invokingContext = new ChatHistoryProvider.InvokingContext(agent, session, requestMessages: []);
-        return (await chatHistoryProvider.InvokingAsync(invokingContext, cancellationToken)).ToList();
+        return [.. (await chatHistoryProvider.InvokingAsync(invokingContext, cancellationToken))];
     }
 
     public override async ValueTask DeleteSessionAsync(AIAgent agent, string conversationId, CancellationToken cancellationToken = default)

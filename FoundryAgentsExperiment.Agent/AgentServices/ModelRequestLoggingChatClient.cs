@@ -5,7 +5,9 @@ namespace FoundryAgentsExperiment.Agent.AgentServices;
 /// <summary>
 /// Records the final, already-composed requests sent to the model without logging user or tool payloads.
 /// </summary>
-internal sealed class ModelRequestLoggingChatClient(IChatClient innerClient, ILogger logger) : DelegatingChatClient(innerClient)
+internal sealed class ModelRequestLoggingChatClient(
+    IChatClient innerClient,
+    ILogger logger) : DelegatingChatClient(innerClient)
 {
     public override async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
@@ -57,7 +59,8 @@ internal sealed class ModelRequestLoggingChatClient(IChatClient innerClient, ILo
         LogCompleted("streaming");
     }
 
-    private void LogStart(string mode, IReadOnlyCollection<ChatMessage> messages, ChatOptions? options) =>
+    private void LogStart(string mode, IReadOnlyCollection<ChatMessage> messages, ChatOptions? options)
+    {
         Log(
             "[Model] Start mode={Mode} traceId={TraceId} conversationId={ConversationId} messageCount={MessageCount} messages={Messages}",
             mode,
@@ -65,6 +68,7 @@ internal sealed class ModelRequestLoggingChatClient(IChatClient innerClient, ILo
             options?.ConversationId ?? "<none>",
             messages.Count,
             DescribeMessages(messages));
+    }
 
     private void LogFunctionCalls(string mode, IEnumerable<AIContent> contents)
     {

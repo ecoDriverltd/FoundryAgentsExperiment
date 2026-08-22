@@ -24,6 +24,8 @@ var sessionPersistence = builder.Configuration
     .GetSection(SessionPersistenceOptions.SectionName)
     .Get<SessionPersistenceOptions>()
     ?? new SessionPersistenceOptions();
+var requirePerServiceCallChatHistoryPersistence = builder.Configuration
+    .GetValue("SessionPersistence:RequirePerServiceCallChatHistoryPersistence", true);
 TokenCredential credential = FoundrySettings.GetCredential(builder.Environment);
 //AgentHostBuilder builder = AgentHost.CreateBuilder(args);
 
@@ -75,7 +77,6 @@ builder.Services.AddSingleton<AgentIsolationKeyProvider, AgentUserIdIsolationKey
 // FoundryBackedAgentSessionStore (not the unrelated x-memory-user-id header used by the hosted
 // memory-search *tool* on versioned Foundry agents).
 var memoryProvider = await projectClient.GetFoundryMemoryProviderAsync(agentName, httpContextAccessor, foundrySettings);
-var enableFoundryMemory = builder.Configuration.GetValue<bool>("EnableFoundryMemory");
 
 // Create a POC toolbox/skill/mcp skill provider for the agent to use. The Foundry MCP server handles skill invocation and approval.
 // NOTE: this HttpClient must live for the app's lifetime (skillsProvider/agent use it per request via
@@ -97,7 +98,6 @@ var compactionProvider = new CompactionProvider(
         chatClient: summarizerChatClient,
         trigger: CompactionTriggers.TokensExceed(sessionPersistence.CompactionTriggerTokens),
         minimumPreservedGroups: sessionPersistence.CompactionMinimumPreservedGroups));
-
 var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
     cosmosClient,
     databaseId: "agent-history",
@@ -112,8 +112,8 @@ var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
 
         throw new InvalidOperationException("The AG-UI thread ID must be available in the agent session before chat history can be persisted.");
     });
-var loggingChatHistoryProvider = new LoggingChatHistoryProvider(
-    cosmosChatHistoryProvider,
+var chatHistoryProvider = new LoggingChatHistoryProvider(
+    new DeduplicatingCosmosChatHistoryProvider(cosmosChatHistoryProvider),
     modelRequestLoggerFactory.CreateLogger<LoggingChatHistoryProvider>());
 
 var modelChatClient = new ModelRequestLoggingChatClient(projectClient
@@ -124,9 +124,7 @@ var modelChatClient = new ModelRequestLoggingChatClient(projectClient
 AIAgent agent = modelChatClient
     .AsBuilder()
     // Important that these providers are at this layer. Compaction and memory change what is sent to the LLM, but shouldn't persist in durable storage.
-    .UseAIContextProviders(enableFoundryMemory
-        ? [compactionProvider, memoryProvider]
-        : [compactionProvider])
+    .UseAIContextProviders([memoryProvider, compactionProvider])
     .BuildAIAgent(new ChatClientAgentOptions
     {
         ChatOptions = new()
@@ -138,12 +136,13 @@ AIAgent agent = modelChatClient
             ModelId = foundrySettings.DeploymentName,
             Tools = [
                 AIFunctionFactory.Create(() => DateTimeOffset.UtcNow,
-                    name: "get_current_time",
-                    description: "Get the current UTC time."
+                    name: "get_current_date_time",
+                    description: "Get the current UTC date and time."
             )]
         },
         Name = agentName,
-        // ChatHistoryProvider = loggingChatHistoryProvider,
+        RequirePerServiceCallChatHistoryPersistence = requirePerServiceCallChatHistoryPersistence, // Defaults to true as compaction plus tool calls seems to result in dropped history otherwise.
+        ChatHistoryProvider = chatHistoryProvider,
         AIContextProviders = [skillsProvider]
     });
 

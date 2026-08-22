@@ -7,6 +7,9 @@
   <Project Path="FoundryAgentsExperiment.AppHost/FoundryAgentsExperiment.AppHost.csproj" />
   <Project Path="FoundryAgentsExperiment.Shared/FoundryAgentsExperiment.Shared.csproj" />
   <Project Path="FoundryAgentsExperiment.IntegrationTests/FoundryAgentsExperiment.IntegrationTests.csproj" />
+  <Project Path="FoundryAgentsExperiment.SampleParityAgent/FoundryAgentsExperiment.SampleParityAgent.csproj" />
+  <Project Path="FoundryAgentsExperiment.SampleParityClient/FoundryAgentsExperiment.SampleParityClient.csproj" />
+  <Project Path="FoundryAgentsExperiment.SampleParityTests/FoundryAgentsExperiment.SampleParityTests.csproj" />
   <Project Path="FoundryAgentsExperiment.ServiceDefaults/FoundryAgentsExperiment.ServiceDefaults.csproj" />
   <Project Path="FoundryAgentsExperiment.Web/FoundryAgentsExperiment.Web.Client/FoundryAgentsExperiment.Web.Client.csproj" />
   <Project Path="FoundryAgentsExperiment.Web/FoundryAgentsExperiment.Web/FoundryAgentsExperiment.Web.csproj" />

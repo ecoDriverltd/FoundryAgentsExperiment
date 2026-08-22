@@ -20,6 +20,7 @@
 
 - Use names such as `isStreaming` instead of underscore-prefixed field names.
 - Qualify instance fields with `this.` in methods when distinguishing them from local variables.
+- Prefer everyday names over technical jargon in code when meaning stays clear. Use terms such as 'deduplicating' instead of 'idempotent' for behavior that prevents duplicate persisted messages.
 
 ## Testing Guidelines
 

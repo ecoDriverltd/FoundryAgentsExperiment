@@ -2,6 +2,7 @@ using AGUI.Client;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
+using Azure.AI.Projects;
 using Azure.Core;
 using Azure.Identity;
 using FoundryAgentsExperiment.Shared.Models;
@@ -12,10 +13,12 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace FoundryAgentsExperiment.IntegrationTests;
@@ -41,10 +44,13 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     private string? previousCompactionTriggerTokens;
     private string? previousCompactionMinimumPreservedGroups;
     private string? previousEnableFoundryMemory;
+    private string? previousRequirePerServiceCallChatHistoryPersistence;
 
     private const string CompactionTriggerTokensEnvironmentVariable = "SessionPersistence__CompactionTriggerTokens";
     private const string CompactionMinimumPreservedGroupsEnvironmentVariable = "SessionPersistence__CompactionMinimumPreservedGroups";
     private const string EnableFoundryMemoryEnvironmentVariable = "EnableFoundryMemory";
+    private const string RequirePerServiceCallChatHistoryPersistenceEnvironmentVariable = "SessionPersistence__RequirePerServiceCallChatHistoryPersistence";
+    private const string TestUserIdPrefix = "integration-test-";
 
     // Aspire's Cosmos resource re-runs its ARM deployment (Bicep) on every AppHost start even when the
     // underlying account already exists, to reconcile any container/config changes (e.g. the
@@ -53,10 +59,12 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     // resources even start. Give BuildAsync/StartAsync a longer budget.
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(2);
 
-    private sealed record CreatedConversation(HttpClient Http, string ThreadId, string Prompt);
+    private sealed record CreatedConversation(HttpClient Http, string UserId, string ThreadId, string Prompt);
     private sealed record PersistedSessionId(string Id);
     private sealed record PersistedSessionDocument(string SerializedSession);
+    private sealed record PersistedChatHistoryDocument(string Message, long Timestamp);
     private sealed record PersistedHistoryMessage(string Role, string? MessageId, string Text);
+    private sealed record ModelRequestSnapshot(string ConversationId, int MessageCount, bool ContainsMemoryContext, string[] MemoryContextTexts);
 
     public async ValueTask InitializeAsync()
     {
@@ -73,9 +81,14 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         this.previousCompactionTriggerTokens = Environment.GetEnvironmentVariable(CompactionTriggerTokensEnvironmentVariable);
         this.previousCompactionMinimumPreservedGroups = Environment.GetEnvironmentVariable(CompactionMinimumPreservedGroupsEnvironmentVariable);
         this.previousEnableFoundryMemory = Environment.GetEnvironmentVariable(EnableFoundryMemoryEnvironmentVariable);
+        this.previousRequirePerServiceCallChatHistoryPersistence = Environment.GetEnvironmentVariable(RequirePerServiceCallChatHistoryPersistenceEnvironmentVariable);
         Environment.SetEnvironmentVariable(CompactionTriggerTokensEnvironmentVariable, "512");
         Environment.SetEnvironmentVariable(CompactionMinimumPreservedGroupsEnvironmentVariable, "2");
         Environment.SetEnvironmentVariable(EnableFoundryMemoryEnvironmentVariable, "true");
+        if (this.previousRequirePerServiceCallChatHistoryPersistence is null)
+        {
+            Environment.SetEnvironmentVariable(RequirePerServiceCallChatHistoryPersistenceEnvironmentVariable, "true");
+        }
 
         var appBuilder = await DistributedApplicationTestingBuilder
             .CreateAsync<Projects.FoundryAgentsExperiment_AppHost>(
@@ -145,6 +158,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     {
         this.resourceLogCts?.Cancel();
 
+        await DeleteTestSessionsAsync(TestContext.Current.CancellationToken);
+
         if (app is not null)
         {
             await app.DisposeAsync();
@@ -153,15 +168,15 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Environment.SetEnvironmentVariable(CompactionTriggerTokensEnvironmentVariable, this.previousCompactionTriggerTokens);
         Environment.SetEnvironmentVariable(CompactionMinimumPreservedGroupsEnvironmentVariable, this.previousCompactionMinimumPreservedGroups);
         Environment.SetEnvironmentVariable(EnableFoundryMemoryEnvironmentVariable, this.previousEnableFoundryMemory);
+        Environment.SetEnvironmentVariable(RequirePerServiceCallChatHistoryPersistenceEnvironmentVariable, this.previousRequirePerServiceCallChatHistoryPersistence);
 
-        await DeleteTestSessionsAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact]
     public async Task AGUIHistoryDiagnosticsCaptureTwoTurnToolConversation()
     {
         var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var userId = TestUserIdPrefix + Guid.NewGuid().ToString("N");
         var agent = CreateAGUIAgent(userId);
         var continuation = new AGUIContinuationState();
 
@@ -176,7 +191,15 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             continuation.Observe(update);
         }
 
-        List<ChatMessage> secondTurnMessages = [CreateUserMessage("Use your silly-math skill to calculate 6 * 7.")];
+        var skillPromptMessageId = "client-" + Guid.NewGuid().ToString("N");
+        List<ChatMessage> secondTurnMessages =
+        [
+            new(ChatRole.User, "Use your silly-math skill to calculate 6 * 7.")
+            {
+                MessageId = skillPromptMessageId,
+            },
+        ];
+        var skillResponse = new StringBuilder();
         var secondTurnSession = await agent.CreateSessionAsync(ct);
         await foreach (var update in agent.RunStreamingAsync(
             secondTurnMessages,
@@ -185,6 +208,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             cancellationToken: ct))
         {
             continuation.Observe(update);
+            skillResponse.Append(string.Concat(update.Contents.OfType<TextContent>().Select(content => content.Text)));
         }
 
         Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId));
@@ -197,6 +221,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.NotNull(conversation);
         Assert.Contains(conversation.Messages, message => message.Text.Contains("Good evening", StringComparison.Ordinal));
         Assert.Contains(conversation.Messages, message => message.Text.Contains("6 * 7", StringComparison.Ordinal));
+        Assert.Contains("42", skillResponse.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.False(string.IsNullOrWhiteSpace(continuation.PreviousRunId));
         Assert.DoesNotContain(conversation.Messages, message => message.Role == ChatRole.Assistant &&
             string.IsNullOrWhiteSpace(message.Text) &&
             !message.Contents.Any(content => content is FunctionCallContent or FunctionResultContent));
@@ -204,20 +230,66 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var skillPromptMessages = conversation.Messages
             .Where(message => message.Role == ChatRole.User && message.Text == secondTurnMessages[0].Text)
             .ToList();
-        Assert.Single(skillPromptMessages);
+        Assert.Equal(skillPromptMessageId, Assert.Single(skillPromptMessages).MessageId);
         Assert.Contains(conversation.Messages, message =>
             message.Role == ChatRole.Assistant &&
             message.Contents.Any(content => content is FunctionCallContent));
         Assert.Contains(conversation.Messages, message =>
             message.Role == ChatRole.Tool &&
             message.Contents.Any(content => content is FunctionResultContent));
+
+        AssertPersistedTranscript(
+            await ReadPersistedChatHistoryAsync(continuation.ThreadId!, ct),
+            ["Good evening.", secondTurnMessages[0].Text!],
+            expectedFunctionCallCount: 1,
+            expectedFunctionResultCount: 1);
+    }
+
+    [Fact]
+    public async Task AGUIServerToolSecondUserTurnPersistsInSessionHistory()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var userId = TestUserIdPrefix + Guid.NewGuid().ToString("N");
+        var agent = CreateAGUIAgent(userId);
+        var continuation = new AGUIContinuationState();
+        const string firstPrompt = "Hello.";
+        const string secondPrompt = "What time is it? Use the get_current_time tool.";
+
+        await RunTurnAsync(agent, continuation, userId, firstPrompt, ct);
+        await RunTurnAsync(agent, continuation, userId, secondPrompt, ct);
+
+        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId));
+
+        var messages = await ReadPersistedChatHistoryAsync(continuation.ThreadId!, ct);
+        var persistedSecondPromptCount = messages.Count(message =>
+            message.GetProperty("role").GetString() == "user" &&
+            message.GetProperty("contents").EnumerateArray().Any(content =>
+                content.TryGetProperty("text", out var text) && text.GetString() == secondPrompt));
+
+        Assert.True(
+            persistedSecondPromptCount == 1,
+            $"Expected the second user prompt once but found {persistedSecondPromptCount}.{Environment.NewLine}" +
+            DescribeRawPersistedHistory(messages));
+        Assert.Contains(
+            messages,
+            message => message.GetProperty("contents").EnumerateArray().Any(content =>
+                content.TryGetProperty("$type", out var type) && type.GetString() == "functionCall"));
+        Assert.Contains(
+            messages,
+            message => message.GetProperty("contents").EnumerateArray().Any(content =>
+                content.TryGetProperty("$type", out var type) && type.GetString() == "functionResult"));
+        AssertPersistedTranscript(
+            messages,
+            [firstPrompt, secondPrompt],
+            expectedFunctionCallCount: 1,
+            expectedFunctionResultCount: 1);
     }
 
     [Fact]
     public async Task AGUICompactionPersistsStateAndPreservesRecentHistory()
     {
         var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var userId = TestUserIdPrefix + Guid.NewGuid().ToString("N");
         var agent = CreateAGUIAgent(userId);
         var continuation = new AGUIContinuationState();
         var earlyFact = "The archive access phrase is AURORA-913.";
@@ -252,44 +324,16 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.Contains(
             persistedHistory,
             message => message.Role == "user" && message.Text.Contains("Cedar-204", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task AGUIPreservesClientAssignedUserMessageIdThroughToolLoop()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
-        var agent = CreateAGUIAgent(userId);
-        var session = await agent.CreateSessionAsync(ct);
-        var continuation = new AGUIContinuationState();
-        var messageId = "client-" + Guid.NewGuid().ToString("N");
-        var prompt = "Use your silly-math skill to calculate 6 * 7.";
-
-        List<ChatMessage> messages = [new ChatMessage(ChatRole.User, prompt) { MessageId = messageId }];
-        await foreach (var update in agent.RunStreamingAsync(
-            messages,
-            session,
-            options: continuation.CreateRunOptions(),
-            cancellationToken: ct))
-        {
-            continuation.Observe(update);
-        }
-
-        using var http = CreateAgentHttpClient(userId);
-        var conversation = await http.GetFromJsonAsync<ConversationDetail>(
-            $"/conversations/{Uri.EscapeDataString(continuation.ThreadId!)}",
-            ct);
-
-        Assert.NotNull(conversation);
-        var recalledUserMessage = Assert.Single(conversation.Messages, message => message.Text == prompt);
-        Assert.Equal(messageId, recalledUserMessage.MessageId);
+        AssertPersistedTranscript(
+            await ReadPersistedChatHistoryAsync(continuation.ThreadId!, ct),
+            ["The most recent meeting room is Cedar-204. Remember this exactly.", "What is the archive access phrase and what is the most recent meeting room?"]);
     }
 
     [Fact]
     public async Task AGUIClientToolContinuationsPersistCompleteSessionHistory()
     {
         var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var userId = TestUserIdPrefix + Guid.NewGuid().ToString("N");
         AITool[] clientTools =
         [
             AIFunctionFactory.Create(() => "51.3967°N, -1.3172°E", name: "get_user_location")
@@ -352,85 +396,55 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             persistedToolResults.Count == 2,
             $"Expected two persisted tool results but found {persistedToolResults.Count}.{Environment.NewLine}" +
             $"Recalled messages:{Environment.NewLine}{recalledMessageSummary}");
-    }
-
-    [Fact]
-    public async Task AGUIClientToolContinuationPersistsEachProtocolMessageOnce()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
-        AITool[] clientTools =
-        [
-            AIFunctionFactory.Create(() => "51.3967°N, -1.3172°E", name: "get_user_location")
-        ];
-        var agent = CreateAGUIAgent(userId, clientTools);
-        var continuation = new AGUIContinuationState();
-        const string prompt = "Where am I?";
-
-        var streamedToolResults = await RunLocationTurnAsync(agent, continuation, userId, prompt, ct);
-        var streamedToolResult = Assert.Single(streamedToolResults);
-        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId));
 
         using var persistedSession = await ReadPersistedSessionAsync(userId, continuation.ThreadId!, ct);
         var stateBag = persistedSession.RootElement.GetProperty("stateBag");
-        var messages = stateBag
-            .GetProperty("InMemoryChatHistoryProvider")
-            .GetProperty("messages")
-            .EnumerateArray()
-            .ToArray();
-
-        var persistedUserMessages = messages
-            .Where(message =>
+        var persistedMessages = await ReadPersistedChatHistoryAsync(continuation.ThreadId!, ct);
+        foreach (var prompt in new[] { "Where am I?", "Where am I now?" })
+        {
+            var promptCount = persistedMessages.Count(message =>
                 message.GetProperty("role").GetString() == "user" &&
                 message.GetProperty("contents").EnumerateArray().Any(content =>
-                    content.TryGetProperty("text", out var text) && text.GetString() == prompt))
-            .ToList();
-        Assert.True(
-            persistedUserMessages.Count == 1,
-            $"Expected the client user message once but found {persistedUserMessages.Count}.{Environment.NewLine}" +
-            DescribeRawPersistedHistory(messages));
+                    content.TryGetProperty("text", out var text) && text.GetString() == prompt));
+            Assert.True(
+                promptCount == 1,
+                $"Expected client prompt '{prompt}' once but found {promptCount}.{Environment.NewLine}" +
+                DescribeRawPersistedHistory(persistedMessages));
+        }
 
-        var functionCalls = messages
+        var rawFunctionCallIds = persistedMessages
             .SelectMany(message => message.GetProperty("contents").EnumerateArray())
             .Where(content => content.TryGetProperty("$type", out var type) && type.GetString() == "functionCall")
+            .Select(content => content.GetProperty("callId").GetString())
+            .Where(callId => !string.IsNullOrWhiteSpace(callId))
+            .Select(callId => callId!)
             .ToList();
-        var functionCall = Assert.Single(functionCalls);
-        Assert.Equal(streamedToolResult.CallId, functionCall.GetProperty("callId").GetString());
-
-        var functionResults = messages
+        var rawFunctionResultIds = persistedMessages
             .SelectMany(message => message.GetProperty("contents").EnumerateArray())
             .Where(content => content.TryGetProperty("$type", out var type) && type.GetString() == "functionResult")
+            .Select(content => content.GetProperty("callId").GetString())
+            .Where(callId => !string.IsNullOrWhiteSpace(callId))
+            .Select(callId => callId!)
             .ToList();
-        var functionResult = Assert.Single(functionResults);
-        Assert.Equal(streamedToolResult.CallId, functionResult.GetProperty("callId").GetString());
-        Assert.False(ContainsPendingToolApprovalRequest(stateBag), DescribeRawPersistedHistory(messages));
+        Assert.Equal(rawFunctionCallIds.Order(), rawFunctionResultIds.Order());
+        Assert.Equal(2, rawFunctionCallIds.Count);
+        Assert.Equal(2, rawFunctionCallIds.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(2, rawFunctionResultIds.Count);
+        Assert.Equal(2, rawFunctionResultIds.Distinct(StringComparer.Ordinal).Count());
+        Assert.False(ContainsPendingToolApprovalRequest(stateBag), DescribeRawPersistedHistory(persistedMessages));
+        AssertPersistedTranscript(
+            persistedMessages,
+            ["Where am I?", "Where am I now?"],
+            expectedFunctionCallCount: 2,
+            expectedFunctionResultCount: 2);
     }
 
-    [Fact]
-    public async Task FoundryMemorySearchContextIsNotPersistedForOrdinaryConversation()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
-        var agent = CreateAGUIAgent(userId);
-        var continuation = new AGUIContinuationState();
-        var fact = $"My unique memory marker is cobalt-{Guid.NewGuid():N}.";
-
-        await RunTurnAsync(agent, continuation, userId, fact, ct);
-        await RunTurnAsync(agent, continuation, userId, "What is my unique memory marker?", ct);
-        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId));
-
-        using var persistedSession = await ReadPersistedSessionAsync(userId, continuation.ThreadId!, ct);
-        var stateBag = persistedSession.RootElement.GetProperty("stateBag");
-        Assert.False(
-            ContainsFoundryMemoryContext(stateBag),
-            $"Foundry memory search context was persisted in the server session.{Environment.NewLine}{stateBag.GetRawText()}");
-    }
 
     [Fact]
-    public async Task ConversationListPersistsAGUIRunContinuation()
+    public async Task ConversationEndpointsPersistTranscriptAndEnforceOwnership()
     {
         var created = await CreateConversationAsync(
-            "test-" + Guid.NewGuid().ToString("N"),
+            TestUserIdPrefix + Guid.NewGuid().ToString("N"),
             TestContext.Current.CancellationToken);
         using var http = created.Http;
 
@@ -440,27 +454,22 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var conversation = Assert.Single(conversations!, item => item.Id == created.ThreadId);
 
         Assert.StartsWith("Conversation endpoint integration test", conversation.Title, StringComparison.Ordinal);
-    }
 
-    [Fact]
-    public async Task ConversationResumeReturnsTranscriptAndEnforcesOwnership()
-    {
-        var created = await CreateConversationAsync(
-            "test-" + Guid.NewGuid().ToString("N"),
-            TestContext.Current.CancellationToken);
-        using var ownerHttp = created.Http;
-
-        var conversation = await ownerHttp.GetFromJsonAsync<ConversationDetail>(
+        var transcript = await http.GetFromJsonAsync<ConversationDetail>(
             $"/conversations/{Uri.EscapeDataString(created.ThreadId)}",
             TestContext.Current.CancellationToken);
 
-        Assert.NotNull(conversation);
-        Assert.Equal(created.ThreadId, conversation.ConversationId);
-        Assert.Contains(conversation.Messages,
+        Assert.NotNull(transcript);
+        Assert.Equal(created.ThreadId, transcript.ConversationId);
+        Assert.Contains(transcript.Messages,
             message => message.Role == ChatRole.User &&
                        message.Text?.Contains(created.Prompt, StringComparison.Ordinal) == true);
 
-        using var otherUserHttp = CreateAgentHttpClient("test-" + Guid.NewGuid().ToString("N"));
+        AssertPersistedTranscript(
+            await ReadPersistedChatHistoryAsync(created.ThreadId, TestContext.Current.CancellationToken),
+            [created.Prompt]);
+
+        using var otherUserHttp = CreateAgentHttpClient(TestUserIdPrefix + Guid.NewGuid().ToString("N"));
         using var otherUserResponse = await otherUserHttp.GetAsync(
             $"/conversations/{Uri.EscapeDataString(created.ThreadId)}",
             TestContext.Current.CancellationToken);
@@ -469,10 +478,10 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task AGUIAgentRecallsFact1()
+    public async Task AGUIAgentRecallsFactsAcrossSessionsAndViaMemory()
     {
         var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
+        var userId = TestUserIdPrefix + Guid.NewGuid().ToString("N");
         var agent = CreateAGUIAgent(userId);
         var continuation = new AGUIContinuationState();
         List<ChatMessage> messages = [CreateUserMessage("My favourite colour is BLUE42. This is important, remember it.")];
@@ -520,100 +529,71 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.True(
             secondTurnHistory.Count(message => message.Role == "user" && message.Text.Contains("BLUE42", StringComparison.Ordinal)) == 1,
             DescribePersistedHistory("after turn 2", secondTurnHistory));
+        using var persistedSession = await ReadPersistedSessionAsync(userId, continuation.ThreadId!, ct);
+        var stateBag = persistedSession.RootElement.GetProperty("stateBag");
+        Assert.False(
+            ContainsFoundryMemoryContext(await ReadPersistedChatHistoryAsync(continuation.ThreadId!, ct)),
+            $"Foundry memory search context was persisted in chat history.{Environment.NewLine}{stateBag.GetRawText()}");
 
         Assert.Contains("BLUE42", response2, StringComparison.OrdinalIgnoreCase);
 
-        // On to the next test, can it recall something with memory in a new conversation?
-        // Need to wait for the memory to land (not sure how long that might take?)        
-        //bool foundMemory = false;
-        //int retryCount = 0;
-        //int retryLimit = 5;
-        //int retryDelayMs = 1000;
+        var projectConnectionString = await app!.GetConnectionStringAsync("agent-test-sw", TestContext.Current.CancellationToken)
+            ?? throw new InvalidOperationException("No Foundry project connection string is available.");
+        var projectConnection = new DbConnectionStringBuilder { ConnectionString = projectConnectionString };
+        var projectEndpoint = projectConnection.TryGetValue("Endpoint", out var endpoint) && endpoint is string value
+            ? value
+            : throw new InvalidOperationException("The Foundry project connection string has no Endpoint value.");
+        var projectClient = new AIProjectClient(new Uri(projectEndpoint), GetCredential());
+        var foundMemory = false;
+        const int retryLimit = 5;
+        const int retryDelayMs = 1000;
 
-        //while (foundMemory == false && retryCount < retryLimit)
-        //{
-        //    var memories = await projectClient.MemoryStores.GetMemoriesAsync("agent-dotnet-memory", userId, cancellationToken: ct)
-        //        .ToListAsync(cancellationToken: ct);
+        for (var retryCount = 0; retryCount < retryLimit; retryCount++)
+        {
+            var memories = await projectClient.MemoryStores
+                .GetMemoriesAsync("agent-dotnet-memory", userId, cancellationToken: ct)
+                .ToListAsync(cancellationToken: ct);
+            var relevantMemory = memories.FirstOrDefault(memory =>
+                memory.Content.Contains("BLUE42", StringComparison.OrdinalIgnoreCase));
+            if (relevantMemory is not null)
+            {
+                foundMemory = true;
+                output.WriteLine($"Found relevant memory: {relevantMemory.Content}");
+                break;
+            }
 
-        //    if (memories.Count != 0)
-        //    {
-        //        foundMemory = true;
-        //        var relevantMemory = memories.FirstOrDefault(m => m.Content.Contains("BLUE42", StringComparison.OrdinalIgnoreCase));
-        //        Assert.True(relevantMemory != null);
-        //        output.WriteLine($"Found relevant memory: {relevantMemory.Content}");
-        //        break;
-        //    }
+            await Task.Delay(retryDelayMs, ct);
+        }
 
-        //    await Task.Delay(retryDelayMs, ct);
-        //    retryCount++;
-        //}
+        // This is testing for something from the memory store in an isolated session
+        // (not resuming the previous conversation).
+        Assert.True(foundMemory, "Memory not found in memory store after five seconds.");
 
-        //Assert.True(foundMemory, "Memory not found in memory store after retries.");
+        var thirdTurnSession = await agent.CreateSessionAsync(ct);
+        messages = [CreateUserMessage("Do you remember my favourite colour?")];
+        var response3 = string.Empty;
 
-        //AgentSession session3 = await agent.CreateSessionAsync(ct);
-        //messages = [CreateUserMessage("Do you remember my favourite colour?")];
-
-        //string response3 = string.Empty;
-        //string errorMessage3 = string.Empty;
-
-        //// Stream the response.
-        //await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, session3, cancellationToken: ct))
-        //{
-        //    // Display streaming text content
-        //    foreach (AIContent content in update.Contents)
-        //    {
-        //        if (content is TextContent textContent)
-        //        {
-        //            response3 += textContent.Text;
-        //        }
-        //        else if (content is ErrorContent errorContent)
-        //        {
-        //            errorMessage3 = errorContent.Message;
-        //        }
-        //    }
-        //}
-
-        //// Does it remember without the chat thread? Assumes the memory provider is working with the user id.
-        //Assert.Contains("BLUE42", response3, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task AGUIAgentCanUseSkill()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        var userId = "test-" + Guid.NewGuid().ToString("N");
-        var agent = CreateAGUIAgent(userId);
-        AgentSession session = await agent.CreateSessionAsync(ct);
-        List<ChatMessage> messages =
-        [
-            new(ChatRole.System, "You are a helpful assistant.")
-        ];
-
-        var continuation = new AGUIContinuationState();
-
-        messages.Add(CreateUserMessage("Use your silly-math skill to calculate 6 * 7."));
-
-        string response1 = string.Empty;
         await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(
             messages,
-            session,
-            options: continuation.CreateRunOptions(),
+            thirdTurnSession,
             cancellationToken: ct))
         {
-            continuation.Observe(update);
-
             foreach (AIContent content in update.Contents)
             {
                 if (content is TextContent textContent)
                 {
-                    response1 += textContent.Text;
+                    response3 += textContent.Text;
                 }
             }
         }
 
-        Assert.Contains("42", response1, StringComparison.OrdinalIgnoreCase);
-        Assert.False(string.IsNullOrWhiteSpace(continuation.ThreadId), "No thread ID returned from the skill run.");
-        Assert.False(string.IsNullOrWhiteSpace(continuation.PreviousRunId), "No run ID returned from the skill run.");
+        Assert.Contains("BLUE42", response3, StringComparison.OrdinalIgnoreCase);
+        AssertPersistedTranscript(
+            await ReadPersistedChatHistoryAsync(continuation.ThreadId!, ct),
+            [
+                "My favourite colour is BLUE42. This is important, remember it.",
+                "What is my favourite colour?",
+            ]);
     }
 
     private ChatClientAgent CreateAGUIAgent(string userId, IList<AITool>? tools = null)
@@ -636,8 +616,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 
     private void TrackTestUser(string userId)
     {
-        if (!userId.StartsWith("test-", StringComparison.Ordinal))
-            throw new InvalidOperationException("Only generated test user IDs may be cleaned up.");
+        if (!userId.StartsWith(TestUserIdPrefix, StringComparison.Ordinal))
+            throw new InvalidOperationException("Only generated integration test user IDs may be cleaned up.");
 
         testUserIds.Add(userId);
     }
@@ -657,10 +637,12 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
                 .WithParameter("@userId", userId);
             using var iterator = sessionContainer.GetItemQueryIterator<PersistedSessionId>(query);
 
+            var sessionIds = new List<string>();
             while (iterator.HasMoreResults)
             {
                 foreach (var session in await iterator.ReadNextAsync(cancellationToken))
                 {
+                    sessionIds.Add(session.Id);
                     var historyQuery = new QueryDefinition("SELECT c.id FROM c WHERE c.conversationId = @conversationId")
                         .WithParameter("@conversationId", session.Id);
                     using var historyIterator = historyContainer.GetItemQueryIterator<PersistedSessionId>(
@@ -681,6 +663,18 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
                         session.Id,
                         new PartitionKey(userId),
                         cancellationToken: cancellationToken);
+                }
+            }
+
+            foreach (var sessionId in sessionIds)
+            {
+                using var historyIterator = historyContainer.GetItemQueryIterator<PersistedSessionId>(
+                    new QueryDefinition("SELECT c.id FROM c WHERE c.conversationId = @conversationId")
+                        .WithParameter("@conversationId", sessionId),
+                    requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(sessionId) });
+                if (historyIterator.HasMoreResults && (await historyIterator.ReadNextAsync(cancellationToken)).Any())
+                {
+                    throw new InvalidOperationException($"Integration test cleanup left history records for session '{sessionId}'.");
                 }
             }
         }
@@ -719,7 +713,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
             lastConversations = conversations;
             if (conversations.Any(conversation => conversation.Id == threadId))
             {
-                return new CreatedConversation(http, threadId, prompt);
+                return new CreatedConversation(http, userId, threadId, prompt);
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
@@ -735,6 +729,103 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         {
             MessageId = Guid.NewGuid().ToString("N"),
         };
+
+    private static void AssertPersistedTranscript(
+        IReadOnlyList<JsonElement> messages,
+        IEnumerable<string> expectedUserPrompts,
+        int? expectedFunctionCallCount = null,
+        int? expectedFunctionResultCount = null)
+    {
+        var rawTranscript = DescribeRawPersistedHistory(messages);
+        var expectedPrompts = expectedUserPrompts.ToArray();
+
+        foreach (var prompt in expectedPrompts)
+        {
+            var promptCount = messages.Count(message =>
+                message.GetProperty("role").GetString() == "user" &&
+                GetTextContents(message).Contains(prompt, StringComparer.Ordinal));
+            Assert.True(
+                promptCount == 1,
+                $"Expected user prompt '{prompt}' once but found {promptCount}.{Environment.NewLine}{rawTranscript}");
+        }
+
+        var userMessages = messages
+            .Where(message => message.GetProperty("role").GetString() == "user")
+            .ToList();
+        Assert.All(
+            userMessages,
+            message => Assert.False(string.IsNullOrWhiteSpace(GetMessageId(message)), $"Persisted user message has no message ID.{Environment.NewLine}{rawTranscript}"));
+        AssertUnique(
+            userMessages.Select(GetMessageId).Where(id => id is not null)!,
+            "user message IDs",
+            rawTranscript);
+
+        var assistantMessages = messages
+            .Where(message => message.GetProperty("role").GetString() == "assistant")
+            .ToList();
+        Assert.All(
+            assistantMessages,
+            message => Assert.True(
+                GetContents(message).Any(),
+                $"Persisted assistant message has no content.{Environment.NewLine}{rawTranscript}"));
+        AssertUnique(
+            assistantMessages.Select(GetMessageId).Where(id => !string.IsNullOrWhiteSpace(id))!,
+            "assistant message IDs",
+            rawTranscript);
+
+        var functionCallIds = GetProtocolCallIds(messages, "functionCall");
+        var functionResultIds = GetProtocolCallIds(messages, "functionResult");
+        AssertUnique(functionCallIds, "function call IDs", rawTranscript);
+        AssertUnique(functionResultIds, "function result IDs", rawTranscript);
+
+        if (expectedFunctionCallCount is not null)
+        {
+            Assert.Equal(expectedFunctionCallCount.Value, functionCallIds.Count);
+        }
+
+        if (expectedFunctionResultCount is not null)
+        {
+            Assert.Equal(expectedFunctionResultCount.Value, functionResultIds.Count);
+        }
+
+        if (functionCallIds.Count > 0 || functionResultIds.Count > 0)
+        {
+            Assert.Equal(functionCallIds.Order(), functionResultIds.Order());
+        }
+    }
+
+    private static IEnumerable<string> GetTextContents(JsonElement message) =>
+        GetContents(message)
+            .Where(content => content.TryGetProperty("text", out _))
+            .Select(content => content.GetProperty("text").GetString())
+            .Where(text => text is not null)!;
+
+    private static IEnumerable<JsonElement> GetContents(JsonElement message) =>
+        message.TryGetProperty("contents", out var contents)
+            ? contents.EnumerateArray()
+            : [];
+
+    private static string? GetMessageId(JsonElement message) =>
+        message.TryGetProperty("messageId", out var messageId)
+            ? messageId.GetString()
+            : null;
+
+    private static List<string> GetProtocolCallIds(IReadOnlyList<JsonElement> messages, string contentType) =>
+        messages
+            .SelectMany(GetContents)
+            .Where(content => content.TryGetProperty("$type", out var type) && type.GetString() == contentType)
+            .Select(content => content.GetProperty("callId").GetString())
+            .Where(callId => !string.IsNullOrWhiteSpace(callId))
+            .Select(callId => callId!)
+            .ToList();
+
+    private static void AssertUnique(IEnumerable<string> identities, string identityName, string rawTranscript)
+    {
+        var values = identities.ToList();
+        Assert.True(
+            values.Count == values.Distinct(StringComparer.Ordinal).Count(),
+            $"Persisted {identityName} are duplicated.{Environment.NewLine}{rawTranscript}");
+    }
 
     private async Task<string> RunTurnAsync(
         ChatClientAgent agent,
@@ -778,32 +869,78 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         string checkpoint,
         CancellationToken cancellationToken)
     {
-        using var cosmosClient = new CosmosClient(cosmosConnectionString, GetCredential());
-        var container = cosmosClient.GetContainer("agent-history", "agent-chat-history");
-        var query = new QueryDefinition(
-                "SELECT VALUE c.message FROM c WHERE c.conversationId = @conversationId ORDER BY c.timestamp")
-            .WithParameter("@conversationId", threadId);
-        using var iterator = container.GetItemQueryIterator<string>(
-            query,
-            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(threadId) });
-        var messages = new List<PersistedHistoryMessage>();
-        while (iterator.HasMoreResults)
-        {
-            foreach (var serializedMessage in await iterator.ReadNextAsync(cancellationToken))
-            {
-                using var message = JsonDocument.Parse(serializedMessage);
-                messages.Add(new PersistedHistoryMessage(
-                    message.RootElement.TryGetProperty("role", out var roleProperty) ? roleProperty.GetString() ?? "<none>" : "<none>",
-                    message.RootElement.TryGetProperty("messageId", out var idProperty) ? idProperty.GetString() : null,
-                    message.RootElement.TryGetProperty("contents", out var contents)
-                        ? string.Join(" | ", contents.EnumerateArray().Select(content =>
-                            content.TryGetProperty("text", out var textProperty) ? textProperty.GetString() : content.GetRawText()))
-                        : "<no contents>"));
-            }
-        }
+        var messages = (await ReadPersistedChatHistoryAsync(threadId, cancellationToken))
+            .Select(message => new PersistedHistoryMessage(
+                message.TryGetProperty("role", out var roleProperty) ? roleProperty.GetString() ?? "<none>" : "<none>",
+                message.TryGetProperty("messageId", out var idProperty) ? idProperty.GetString() : null,
+                message.TryGetProperty("contents", out var contents)
+                    ? string.Join(" | ", contents.EnumerateArray().Select(content =>
+                        content.TryGetProperty("text", out var textProperty) ? textProperty.GetString() : content.GetRawText()))
+                    : "<no contents>"))
+            .ToList();
 
         output.WriteLine(DescribePersistedHistory(checkpoint, messages));
         return messages;
+    }
+
+    private async Task<List<JsonElement>> ReadPersistedChatHistoryAsync(
+        string threadId,
+        CancellationToken cancellationToken)
+    {
+        using var cosmosClient = new CosmosClient(cosmosConnectionString, GetCredential());
+        var container = cosmosClient.GetContainer("agent-history", "agent-chat-history");
+        var query = new QueryDefinition(
+            "SELECT c.message, c.timestamp FROM c WHERE c.conversationId = @conversationId AND c.type = 'ChatMessage' ORDER BY c.timestamp")
+            .WithParameter("@conversationId", threadId);
+        using var iterator = container.GetItemQueryIterator<PersistedChatHistoryDocument>(
+            query,
+            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(threadId) });
+        var messages = new List<JsonElement>();
+
+        while (iterator.HasMoreResults)
+        {
+            foreach (var document in await iterator.ReadNextAsync(cancellationToken))
+            {
+                var message = JsonNode.Parse(document.Message)
+                    ?? throw new InvalidOperationException("Cosmos chat history contains an empty message.");
+                NormalizeJsonPropertyNames(message);
+                using var normalizedMessage = JsonDocument.Parse(message.ToJsonString());
+                messages.Add(normalizedMessage.RootElement.Clone());
+            }
+        }
+
+        return messages;
+    }
+
+    private static void NormalizeJsonPropertyNames(JsonNode node)
+    {
+        if (node is JsonObject jsonObject)
+        {
+            foreach (var property in jsonObject.ToList())
+            {
+                if (property.Value is not null)
+                {
+                    NormalizeJsonPropertyNames(property.Value);
+                }
+
+                if (!property.Key.StartsWith('$') && property.Key.Length > 0)
+                {
+                    var normalizedName = char.ToLowerInvariant(property.Key[0]) + property.Key[1..];
+                    if (normalizedName != property.Key)
+                    {
+                        jsonObject.Remove(property.Key);
+                        jsonObject[normalizedName] = property.Value;
+                    }
+                }
+            }
+        }
+        else if (node is JsonArray jsonArray)
+        {
+            foreach (var item in jsonArray.Where(item => item is not null))
+            {
+                NormalizeJsonPropertyNames(item!);
+            }
+        }
     }
 
     private async Task<JsonDocument> ReadPersistedSessionAsync(
@@ -897,6 +1034,9 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         return false;
     }
 
+    private static bool ContainsFoundryMemoryContext(IEnumerable<JsonElement> messages) =>
+        messages.Any(ContainsFoundryMemoryContext);
+
     private static bool ContainsFoundryMemoryContext(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
@@ -940,6 +1080,14 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     private static string DescribeRawPersistedHistory(IReadOnlyList<JsonElement> messages) =>
         string.Join(Environment.NewLine, messages.Select((message, index) =>
             $"  [{index}] {message.GetRawText()}"));
+
+    private static JsonElement[] GetInMemoryHistoryMessages(JsonElement session) =>
+        session
+            .GetProperty("stateBag")
+            .GetProperty("InMemoryChatHistoryProvider")
+            .GetProperty("messages")
+            .EnumerateArray()
+            .ToArray();
 
     internal static TokenCredential GetCredential() =>
          new ChainedTokenCredential(

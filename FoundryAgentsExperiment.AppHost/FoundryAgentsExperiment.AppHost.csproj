@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <UserSecretsId>39c4cf09-34af-4d39-8305-2f3c9161e2cc</UserSecretsId>
 	  <AspireUseCliBundle>true</AspireUseCliBundle>
+    <NoWarn>$(NoWarn);ASPIRETERMINAL001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,6 +20,8 @@
   <ItemGroup>
     <ProjectReference Include="..\FoundryAgentsExperiment.Agent\FoundryAgentsExperiment.Agent.csproj" />
     <ProjectReference Include="..\FoundryAgentsExperiment.Console\FoundryAgentsExperiment.Console.csproj" />
+    <ProjectReference Include="..\FoundryAgentsExperiment.SampleParityAgent\FoundryAgentsExperiment.SampleParityAgent.csproj" />
+    <ProjectReference Include="..\FoundryAgentsExperiment.SampleParityClient\FoundryAgentsExperiment.SampleParityClient.csproj" />
     <ProjectReference Include="..\FoundryAgentsExperiment.Web\FoundryAgentsExperiment.Web\FoundryAgentsExperiment.Web.csproj" />
   </ItemGroup>
 

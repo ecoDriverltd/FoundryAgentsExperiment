@@ -65,6 +65,18 @@ chat.Resource.SkuCapacity = 60000;
 var embeddings = foundry.AddDeployment("embeddings-model", FoundryModel.OpenAI.TextEmbedding3Small);
 embeddings.Resource.SkuCapacity = 1000;
 
+// Minimal baseline matching the Microsoft AG-UI client/server sample. It intentionally excludes
+// the application session store, Cosmos history, context providers, skills, and diagnostics.
+var sampleParityAgent = builder.AddProject<Projects.FoundryAgentsExperiment_SampleParityAgent>("sample-parity-agent")
+    .WithReference(project).WaitFor(project)
+    .WithReference(chat).WaitFor(chat)
+    .WithEnvironment("MODEL_DEPLOYMENT_NAME", FoundryModel.OpenAI.Gpt54Nano.Name);
+
+builder.AddProject<Projects.FoundryAgentsExperiment_SampleParityClient>("sample-parity-client")
+    .WithReference(sampleParityAgent)
+    .WithEnvironment("SAMPLE_PARITY_AGENT_URL", sampleParityAgent.GetEndpoint("https"))
+    .WithTerminal();
+
 // Real Azure Cosmos account (no RunAsEmulator()) - consistent with AddFoundry above, which always
 // provisions a real Azure resource even for local F5 runs. Backs the agent's durable AG-UI sessions.
 var cosmosDb = builder.AddAzureCosmosDB("cosmos");
