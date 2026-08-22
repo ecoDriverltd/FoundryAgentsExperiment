@@ -31,3 +31,7 @@
 
 - Avoid empty catch blocks and exception-driven control flow where possible; when a catch is necessary, log the captured behavior.
 - Prefer root-cause fixes over prompt-level or UI-level hacks that mask unexpected agent behavior; retain diagnostics and investigate the underlying cause instead.
+
+## Implementation Guidelines
+
+- When the user asks for implementation, proceed immediately after a brief acknowledgment; do not pause awaiting confirmation or narrate a future action without executing it.

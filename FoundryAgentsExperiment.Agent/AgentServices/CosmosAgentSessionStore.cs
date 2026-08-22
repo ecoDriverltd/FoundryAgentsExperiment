@@ -4,6 +4,7 @@ using Microsoft.Agents.AI.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
@@ -109,6 +110,7 @@ public sealed class CosmosAgentSessionStore(
 
     public override async ValueTask SaveSessionAsync(AIAgent agent, string conversationId, AgentSession session, CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         var userId = httpContextAccessor.GetAgentUserId();
         var threadId = GetThreadId(conversationId, userId);
         var requestId = httpContextAccessor.HttpContext?.TraceIdentifier ?? "<no-http-request>";
@@ -118,7 +120,9 @@ public sealed class CosmosAgentSessionStore(
             requestId,
             threadId,
             userId);
+        var serializationStopwatch = Stopwatch.StartNew();
         var serialized = await agent.SerializeSessionAsync(session, cancellationToken: cancellationToken);
+        serializationStopwatch.Stop();
         var serializedText = serialized.GetRawText();
         var serializedBytes = Encoding.UTF8.GetByteCount(serializedText);
         EnsureSessionFitsCosmosItemLimit(threadId, userId, serializedBytes);
@@ -173,12 +177,17 @@ public sealed class CosmosAgentSessionStore(
             context.Entry(existing).Property(entry => entry.LastUpdatedAt).CurrentValue = now;
         }
 
+        var saveStopwatch = Stopwatch.StartNew();
         await context.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "[SessionStore] Saved session requestId={RequestId} threadId={ThreadId} userId={UserId}",
+            "[Timing] Session saved requestId={RequestId} threadId={ThreadId} userId={UserId} serializedBytes={SerializedBytes} serializationMs={SerializationMs} cosmosSaveMs={CosmosSaveMs} elapsedMs={ElapsedMs}",
             requestId,
             threadId,
-            userId);
+            userId,
+            serializedBytes,
+            serializationStopwatch.ElapsedMilliseconds,
+            saveStopwatch.ElapsedMilliseconds,
+            stopwatch.ElapsedMilliseconds);
     }
 
     public async Task<IReadOnlyList<AgentSessionEntry>> ListConversationsAsync(

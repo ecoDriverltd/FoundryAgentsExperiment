@@ -6,6 +6,7 @@
 @using FoundryAgentsExperiment.Shared.Models
 @using Microsoft.Agents.AI
 @using Microsoft.Extensions.AI
+@using System.Diagnostics
 
 @inject AGUIChatClient ChatClient
 @inject GeolocationService Geolocation
@@ -143,6 +144,10 @@
 
     private async Task SendMessageAsync(string userText)
     {
+        var turnStopwatch = Stopwatch.StartNew();
+        var receivedVisibleAssistantText = false;
+        var lastVisibleAssistantTextAt = TimeSpan.Zero;
+        Console.WriteLine($"[Timing] Chat turn started at={DateTimeOffset.UtcNow:O}");
         CancelStreaming();
         this.hideFollowingAssistantResponse = false;
 
@@ -203,12 +208,24 @@
                             if (!this.hideFollowingAssistantResponse)
                             {
                                 responseText.Text += text.Text;
+                                if (!string.IsNullOrWhiteSpace(text.Text))
+                                {
+                                    if (!receivedVisibleAssistantText)
+                                    {
+                                        receivedVisibleAssistantText = true;
+                                        Console.WriteLine($"[Timing] First visible assistant text elapsedMs={turnStopwatch.ElapsedMilliseconds}");
+                                    }
+
+                                    lastVisibleAssistantTextAt = turnStopwatch.Elapsed;
+                                }
                             }
                             break;
                         case FunctionCallContent call:
+                            Console.WriteLine($"[Timing] Tool call received callId={call.CallId} elapsedMs={turnStopwatch.ElapsedMilliseconds}");
                             this.functionCallNames[call.CallId] = call.Name;
                             break;
                         case FunctionResultContent result:
+                            Console.WriteLine($"[Timing] Tool result received callId={result.CallId} elapsedMs={turnStopwatch.ElapsedMilliseconds}");
                             AddVisibleToolResult(result);
                             break;
                     }
@@ -218,6 +235,9 @@
             }
 
             completed = true;
+            Console.WriteLine(
+                $"[Timing] AG-UI stream completed elapsedMs={turnStopwatch.ElapsedMilliseconds} " +
+                $"afterLastVisibleTextMs={(receivedVisibleAssistantText ? (turnStopwatch.Elapsed - lastVisibleAssistantTextAt).TotalMilliseconds : 0):F0}");
         }
         catch (OperationCanceledException)
         {
@@ -239,6 +259,7 @@
                     UpdateConversationSummary(userMessage.Text);
 
                 await InvokeAsync(StateHasChanged);
+                Console.WriteLine($"[Timing] Loading indicator cleared elapsedMs={turnStopwatch.ElapsedMilliseconds}");
             }
 
             requestCancellation.Dispose();

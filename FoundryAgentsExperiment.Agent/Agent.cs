@@ -77,6 +77,10 @@ builder.Services.AddSingleton<AgentIsolationKeyProvider, AgentUserIdIsolationKey
 // FoundryBackedAgentSessionStore (not the unrelated x-memory-user-id header used by the hosted
 // memory-search *tool* on versioned Foundry agents).
 var memoryProvider = await projectClient.GetFoundryMemoryProviderAsync(agentName, httpContextAccessor, foundrySettings);
+var timingMemoryProvider = new TimingAIContextProvider(
+    "FoundryMemoryProvider",
+    memoryProvider,
+    modelRequestLoggerFactory.CreateLogger<TimingAIContextProvider>());
 
 // Create a POC toolbox/skill/mcp skill provider for the agent to use. The Foundry MCP server handles skill invocation and approval.
 // NOTE: this HttpClient must live for the app's lifetime (skillsProvider/agent use it per request via
@@ -113,7 +117,9 @@ var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
         throw new InvalidOperationException("The AG-UI thread ID must be available in the agent session before chat history can be persisted.");
     });
 var chatHistoryProvider = new LoggingChatHistoryProvider(
-    new DeduplicatingCosmosChatHistoryProvider(cosmosChatHistoryProvider),
+    new DeduplicatingCosmosChatHistoryProvider(
+        cosmosChatHistoryProvider,
+        modelRequestLoggerFactory.CreateLogger<DeduplicatingCosmosChatHistoryProvider>()),
     modelRequestLoggerFactory.CreateLogger<LoggingChatHistoryProvider>());
 
 var modelChatClient = new ModelRequestLoggingChatClient(projectClient
@@ -124,7 +130,7 @@ var modelChatClient = new ModelRequestLoggingChatClient(projectClient
 AIAgent agent = modelChatClient
     .AsBuilder()
     // Important that these providers are at this layer. Compaction and memory change what is sent to the LLM, but shouldn't persist in durable storage.
-    .UseAIContextProviders([memoryProvider, compactionProvider])
+    .UseAIContextProviders([timingMemoryProvider, compactionProvider])
     .BuildAIAgent(new ChatClientAgentOptions
     {
         ChatOptions = new()

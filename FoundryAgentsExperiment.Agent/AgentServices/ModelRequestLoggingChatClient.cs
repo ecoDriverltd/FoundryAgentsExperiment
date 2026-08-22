@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using System.Diagnostics;
 
 namespace FoundryAgentsExperiment.Agent.AgentServices;
 
@@ -15,6 +16,7 @@ internal sealed class ModelRequestLoggingChatClient(
         CancellationToken cancellationToken = default)
     {
         var request = messages.ToList();
+        var stopwatch = Stopwatch.StartNew();
         LogStart("non-streaming", request, options);
         LogUnmatchedFunctionCalls("non-streaming", request);
 
@@ -29,7 +31,7 @@ internal sealed class ModelRequestLoggingChatClient(
         }
 
         LogFunctionCalls("non-streaming", response.Messages.SelectMany(message => message.Contents));
-        LogCompleted("non-streaming");
+        LogCompleted("non-streaming", stopwatch.ElapsedMilliseconds);
         return response;
     }
 
@@ -39,6 +41,9 @@ internal sealed class ModelRequestLoggingChatClient(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var request = messages.ToList();
+        var stopwatch = Stopwatch.StartNew();
+        var receivedFirstUpdate = false;
+        var lastUpdateAt = TimeSpan.Zero;
         LogStart("streaming", request, options);
         LogUnmatchedFunctionCalls("streaming", request);
 
@@ -52,11 +57,23 @@ internal sealed class ModelRequestLoggingChatClient(
             }
 
             var update = enumerator.Current;
+            if (!receivedFirstUpdate)
+            {
+                receivedFirstUpdate = true;
+                Log("[Timing] Model first update traceId={TraceId} elapsedMs={ElapsedMs}",
+                    Activity.Current?.TraceId.ToString() ?? "<none>", stopwatch.ElapsedMilliseconds);
+            }
+
+            lastUpdateAt = stopwatch.Elapsed;
             LogFunctionCalls("streaming", update.Contents);
             yield return update;
         }
 
-        LogCompleted("streaming");
+        Log("[Timing] Model stream ended traceId={TraceId} elapsedMs={ElapsedMs} afterLastUpdateMs={AfterLastUpdateMs}",
+            Activity.Current?.TraceId.ToString() ?? "<none>",
+            stopwatch.ElapsedMilliseconds,
+            receivedFirstUpdate ? (stopwatch.Elapsed - lastUpdateAt).TotalMilliseconds : 0);
+        LogCompleted("streaming", stopwatch.ElapsedMilliseconds);
     }
 
     private void LogStart(string mode, IReadOnlyCollection<ChatMessage> messages, ChatOptions? options)
@@ -107,11 +124,12 @@ internal sealed class ModelRequestLoggingChatClient(
         }
     }
 
-    private void LogCompleted(string mode) =>
+    private void LogCompleted(string mode, long elapsedMilliseconds) =>
         Log(
-            "[Model] Completed mode={Mode} traceId={TraceId}",
+            "[Model] Completed mode={Mode} traceId={TraceId} elapsedMs={ElapsedMs}",
             mode,
-            System.Diagnostics.Activity.Current?.TraceId.ToString() ?? "<none>");
+            Activity.Current?.TraceId.ToString() ?? "<none>",
+            elapsedMilliseconds);
 
     private void Log(string message, params object?[] arguments)
     {
