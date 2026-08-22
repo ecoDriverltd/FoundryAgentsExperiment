@@ -242,7 +242,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var agent = CreateAGUIAgent(userId);
         var session = await agent.CreateSessionAsync(cancellationToken);
         var continuation = new AGUIContinuationState();
-        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+        Assert.Null(continuation.CreateRunOptions());
         var prompt = $"Conversation endpoint integration test {Guid.NewGuid():N}.";
         List<ChatMessage> messages = [CreateUserMessage(prompt)];
 
@@ -293,7 +293,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var agent = CreateAGUIAgent(userId);
         var session = await agent.CreateSessionAsync(ct);
         var continuation = new AGUIContinuationState();
-        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+        Assert.Null(continuation.CreateRunOptions());
 
         await foreach (var update in agent.RunStreamingAsync(
             [CreateUserMessage("Good evening.")],
@@ -349,7 +349,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var agent = CreateAGUIAgent(userId);
         var session = await agent.CreateSessionAsync(ct);
         var continuation = new AGUIContinuationState();
-        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+        Assert.Null(continuation.CreateRunOptions());
         var messageId = "client-" + Guid.NewGuid().ToString("N");
         var prompt = "Use your silly-math skill to calculate 6 * 7.";
 
@@ -384,7 +384,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var agent = CreateAGUIAgent(userId, clientTools);
         var session = await agent.CreateSessionAsync(ct);
         var continuation = new AGUIContinuationState();
-        continuation.InitializeThread(Guid.NewGuid().ToString("N"));
+        Assert.Null(continuation.CreateRunOptions());
 
         var firstTurnResults = await RunLocationTurnAsync(agent, session, continuation, "Where am I?", ct);
         var secondTurnResults = await RunLocationTurnAsync(agent, session, continuation, "Where am I now?", ct);

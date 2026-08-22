@@ -22,14 +22,8 @@ public sealed class AGUIContinuationState
         PreviousRunId = null;
     }
 
-    public void InitializeThread(string threadId)
-    {
-        ThreadId = threadId;
-        PreviousRunId = null;
-    }
-
     public AgentRunOptions? CreateRunOptions() =>
-        ThreadId is null
+        ThreadId is null || PreviousRunId is null
             ? null
             : new ChatClientAgentRunOptions
             {

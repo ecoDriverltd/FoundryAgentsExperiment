@@ -155,11 +155,7 @@
         _displayMessages.Add(userMessage);
 
         // The server loads its own Cosmos-managed transcript; send only the fresh turn.
-        if (_continuation.ThreadId is null)
-        {
-            _conversationId = Guid.NewGuid().ToString("N");
-            _continuation.InitializeThread(_conversationId);
-        }
+        // AGUIChatClient creates the first protocol thread ID when no continuation is supplied.
 
         var responseText = new TextContent(string.Empty);
         _inProgressMessage = new ChatMessage(ChatRole.Assistant, [responseText]);
