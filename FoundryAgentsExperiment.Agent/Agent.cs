@@ -133,7 +133,6 @@ builder.AddAIAgent(agentName, (_, _) => agent)
 builder.Services.AddFoundryResponses(agent);
 builder.Services.AddFoundryToolboxes(credential);
 
-
 // Needed for conversations in the DevUI site (not AG-UI)
 builder.Services.AddOpenAIConversations();
 
