@@ -65,20 +65,26 @@ chat.Resource.SkuCapacity = 60000;
 var embeddings = foundry.AddDeployment("embeddings-model", FoundryModel.OpenAI.TextEmbedding3Small);
 embeddings.Resource.SkuCapacity = 1000;
 
+// Minimal baseline matching the Microsoft AG-UI client/server sample. It intentionally excludes
+// the application session store, Cosmos history, context providers, skills, and diagnostics.
+var sampleParityAgent = builder.AddProject<Projects.FoundryAgentsExperiment_SampleParityAgent>("sample-parity-agent")
+    .WithReference(project).WaitFor(project)
+    .WithReference(chat).WaitFor(chat)
+    .WithEnvironment("MODEL_DEPLOYMENT_NAME", FoundryModel.OpenAI.Gpt54Nano.Name);
+
+builder.AddProject<Projects.FoundryAgentsExperiment_SampleParityClient>("sample-parity-client")
+    .WithReference(sampleParityAgent)
+    .WithEnvironment("SAMPLE_PARITY_AGENT_URL", sampleParityAgent.GetEndpoint("https"))
+    .WithTerminal();
+
 // Real Azure Cosmos account (no RunAsEmulator()) - consistent with AddFoundry above, which always
-// provisions a real Azure resource even for local F5 runs. Backs the agent's durable AG-UI transcript
-// and the conversation index used to list a user's past conversations.
+// provisions a real Azure resource even for local F5 runs. Backs the agent's durable AG-UI sessions.
 var cosmosDb = builder.AddAzureCosmosDB("cosmos");
 var database = cosmosDb.AddCosmosDatabase("agent-history");
-// New custom transcript schema. The hierarchical partition key isolates each tenant/user/conversation,
-// allowing idempotent create-only message writes and ordered replay within a single logical partition.
-var transcript = database.AddContainer("agent-transcript", partitionKeyPaths: ["/tenantId", "/userId", "/conversationId"]);
-// CosmosConversationIndexStore partitions by userId only (see RecordConversationTurnAsync/ListConversationsAsync).
-database.AddContainer("conversation-index", partitionKeyPath: "/userId");
-// CosmosAgentSessionStore partitions by userId only (see AgentSessionDbContext), storing the small
-// serialized AgentSession (ConversationId + StateBag bookkeeping) - never chat messages, which stay
-// in the "chat-history" container above.
+// CosmosAgentSessionStore partitions by userId only (see AgentSessionDbContext) and stores both
+// framework session state/history and application-owned conversation metadata.
 database.AddContainer("agent-sessions", partitionKeyPath: "/userId");
+database.AddContainer("agent-chat-history", partitionKeyPath: "/conversationId");
 
 // Register project as foundry hosted agent
 var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
@@ -91,14 +97,13 @@ var agent = builder.AddProject<FoundryAgentsExperiment_Agent>("agent-dotnet")
     .WithReference(embeddings).WaitFor(embeddings)
     .WithReference(cosmosDb).WaitFor(cosmosDb)
     .WithReference(database).WaitFor(database)
-    .WithReference(transcript).WaitFor(transcript)
     .WithRoleAssignments(foundry, CognitiveServicesBuiltInRole.CognitiveServicesOpenAIUser)
     .WithEnvironment("MODEL_DEPLOYMENT_NAME", FoundryModel.OpenAI.Gpt54Nano.Name)
     .AsHostedAgent(project,
         configure =>
         {
-            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Responses, "2.0.0"));
-            configure.ContainerProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
+            configure.ProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Responses, "2.0.0"));
+            configure.ProtocolVersions.Add(new ProtocolVersionRecord(ProjectsAgentProtocol.Invocations, "1.0.0"));
         });
 
 if (builder.Environment.IsDevelopment())

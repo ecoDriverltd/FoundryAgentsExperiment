@@ -22,6 +22,9 @@ public sealed class AGUIContinuationState
         PreviousRunId = null;
     }
 
+    // Conversation history belongs to the hosted Cosmos session, not the client. The client creates
+    // a fresh AgentSession for each user-initiated turn because it accumulates streamed messages.
+    // ThreadId and ParentRunId let that fresh session continue the same hosted AG-UI conversation.
     public AgentRunOptions? CreateRunOptions() =>
         ThreadId is null || PreviousRunId is null
             ? null
@@ -39,6 +42,8 @@ public sealed class AGUIContinuationState
 
     public void Observe(AgentResponseUpdate update)
     {
+        // RUN_STARTED identifies this request. Its run ID is sent as ParentRunId when the user sends
+        // their next message; the client does not retain messages from earlier user turns.
         if (update.AsChatResponseUpdate().RawRepresentation is RunStartedEvent runStarted)
         {
             ThreadId = runStarted.ThreadId;

@@ -6,13 +6,9 @@ public sealed record ConversationSummary(
     string Id,
     string Title,
     DateTimeOffset CreatedAt,
-    DateTimeOffset LastUpdatedAt,
-    string? LastRunId);
+    DateTimeOffset LastUpdatedAt);
 
 public sealed record ConversationDetail(
     string ConversationId,
     string Title,
-    string? LastRunId,
     IReadOnlyList<ChatMessage> Messages);
-
-public sealed record UpdateConversationContinuationRequest(string RunId, string? InitialUserPrompt);

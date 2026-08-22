@@ -9,6 +9,7 @@ using Microsoft.Agents.AI.Compaction;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using OpenAI.Responses;
@@ -19,8 +20,12 @@ var port = Environment.GetEnvironmentVariable("DEFAULT_AD_PORT") ?? "8088";
 var builder = WebApplication.CreateBuilder(args);
 
 var foundrySettings = FoundrySettings.FromConfiguration(builder.Configuration);
+var sessionPersistence = builder.Configuration
+    .GetSection(SessionPersistenceOptions.SectionName)
+    .Get<SessionPersistenceOptions>()
+    ?? new SessionPersistenceOptions();
+
 TokenCredential credential = FoundrySettings.GetCredential(builder.Environment);
-//AgentHostBuilder builder = AgentHost.CreateBuilder(args);
 
 if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS"))
     && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("URLS")))
@@ -32,23 +37,14 @@ if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URL
 builder.Logging.SetMinimumLevel(LogLevel.Trace);
 builder.AddServiceDefaults();
 
-// Configure CORS
-builder.Services.AddCors(options =>
-{
-    options.AddDefaultPolicy(policy =>
-    {
-        policy.AllowAnyOrigin()
-              .AllowAnyMethod()
-              .AllowAnyHeader();
-    });
-});
+builder.Services.AddHttpClient().AddLogging();
+builder.Services.AddAGUIServer();
 
-// Backs the server-managed chat history. Connection name must match the AppHost Cosmos resource.
+// Backs the server-managed agent session store. Connection name must match the AppHost Cosmos resource.
 var cosmosEndpoint = builder.Configuration.GetConnectionString("cosmos")
     ?? throw new InvalidOperationException("Missing 'cosmos' connection string. Ensure the AppHost references the Cosmos DB resource.");
 var cosmosClient = new CosmosClient(cosmosEndpoint, credential);
 
-builder.AddCosmosDbContext<ConversationIndexDbContext>("cosmos", "agent-history");
 builder.AddCosmosDbContext<AgentSessionDbContext>("cosmos", "agent-history");
 
 Console.WriteLine($"Project Endpoint: {foundrySettings.ProjectUri}");
@@ -64,6 +60,7 @@ using var azureSdkDiagnostics = AzureEventSourceListener.CreateConsoleLogger(Eve
 // Shared instance so the memory provider and session store resolve the same request context.
 var httpContextAccessor = new HttpContextAccessor();
 builder.Services.AddSingleton<IHttpContextAccessor>(httpContextAccessor);
+builder.Services.AddSingleton<AgUiFailureDiagnostics>();
 
 builder.Services.AddCosmosAgentSessionStore(agentName);
 
@@ -78,6 +75,10 @@ builder.Services.AddSingleton<AgentIsolationKeyProvider, AgentUserIdIsolationKey
 // FoundryBackedAgentSessionStore (not the unrelated x-memory-user-id header used by the hosted
 // memory-search *tool* on versioned Foundry agents).
 var memoryProvider = await projectClient.GetFoundryMemoryProviderAsync(agentName, httpContextAccessor, foundrySettings);
+var timingMemoryProvider = new TimingAIContextProvider(
+    "FoundryMemoryProvider",
+    memoryProvider,
+    modelRequestLoggerFactory.CreateLogger<TimingAIContextProvider>());
 
 // Create a POC toolbox/skill/mcp skill provider for the agent to use. The Foundry MCP server handles skill invocation and approval.
 // NOTE: this HttpClient must live for the app's lifetime (skillsProvider/agent use it per request via
@@ -86,12 +87,7 @@ var memoryProvider = await projectClient.GetFoundryMemoryProviderAsync(agentName
 string toolboxName = "my-toolbox";
 var skillsProvider = await builder.GetTestAgentSkillsProviderAsync(projectClient, toolboxName, foundrySettings, credential);
 
-var chatHistoryProvider = new CosmosAgUiChatHistoryProvider(cosmosClient, httpContextAccessor);
-
-builder.Services.AddSingleton<CosmosConversationIndexStore>();
-
-// Compaction runs beneath ChatHistoryProvider's load/store hooks, preserving the original transcript
-// while using an in-memory summary to shape the current model request.
+// Compaction shapes the current model request while the AgentSessionStore retains durable session state.
 // Reusing the same Responses client/model as the summarizer for simplicity in this experiment; swap
 // in a smaller/cheaper deployment here if one becomes available.
 var summarizerChatClient = new ModelRequestLoggingChatClient(projectClient
@@ -102,7 +98,27 @@ var summarizerChatClient = new ModelRequestLoggingChatClient(projectClient
 var compactionProvider = new CompactionProvider(
     new SummarizationCompactionStrategy(
         chatClient: summarizerChatClient,
-        trigger: CompactionTriggers.TokensExceed(50_000)));
+        trigger: CompactionTriggers.TokensExceed(sessionPersistence.CompactionTriggerTokens),
+        minimumPreservedGroups: sessionPersistence.CompactionMinimumPreservedGroups));
+var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
+    cosmosClient,
+    databaseId: "agent-history",
+    containerId: "agent-chat-history",
+    stateInitializer: session =>
+    {
+        if (session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.AgUiThreadIdStateBagKey, out var threadId) == true &&
+            !string.IsNullOrWhiteSpace(threadId))
+        {
+            return new CosmosChatHistoryProvider.State(threadId);
+        }
+
+        throw new InvalidOperationException("The AG-UI thread ID must be available in the agent session before chat history can be persisted.");
+    });
+var chatHistoryProvider = new LoggingChatHistoryProvider(
+    new DeduplicatingCosmosChatHistoryProvider(
+        cosmosChatHistoryProvider,
+        modelRequestLoggerFactory.CreateLogger<DeduplicatingCosmosChatHistoryProvider>()),
+    modelRequestLoggerFactory.CreateLogger<LoggingChatHistoryProvider>());
 
 var modelChatClient = new ModelRequestLoggingChatClient(projectClient
     .GetProjectOpenAIClient()
@@ -111,7 +127,8 @@ var modelChatClient = new ModelRequestLoggingChatClient(projectClient
 
 AIAgent agent = modelChatClient
     .AsBuilder()
-    .UseAIContextProviders(compactionProvider)
+    // Important that these providers are at this layer. Compaction and memory change what is sent to the LLM, but shouldn't persist in durable storage.
+    .UseAIContextProviders([timingMemoryProvider, compactionProvider])
     .BuildAIAgent(new ChatClientAgentOptions
     {
         ChatOptions = new()
@@ -121,25 +138,25 @@ AIAgent agent = modelChatClient
                 If the user asks for their location or where they are or similar, call the get_user_location tool to retrieve it.
                 """,
             ModelId = foundrySettings.DeploymentName,
-            //Tools = []
+            Tools = [
+                AIFunctionFactory.Create(() => DateTimeOffset.UtcNow,
+                    name: "get_current_date_time",
+                    description: "Get the current UTC date and time."
+            )]
         },
         Name = agentName,
+        RequirePerServiceCallChatHistoryPersistence = true, // Defaults to true as compaction plus tool calls seems to result in dropped history otherwise.
         ChatHistoryProvider = chatHistoryProvider,
-        AIContextProviders = [
-            memoryProvider,
-            skillsProvider
-        ],
+        AIContextProviders = [skillsProvider]
     });
 
-builder.Services.AddKeyedSingleton(agentName, agent);
+builder.AddAIAgent(agentName, (_, _) => agent)
+       .WithSessionStore((sp, agentName) => sp.GetKeyedService<CosmosAgentSessionStore>(agentName)!);
 
 builder.Services.AddFoundryResponses(agent);
 builder.Services.AddFoundryToolboxes(credential);
 
-// This adds OpenAI Conversations endpoints, but I guess with the combination of FoundryResponses and AG-UI,
-// Isn't using this? The conversation id comes from the first response.
-
-// Needed for conversations in the DevUI site, but presumable not 
+// Needed for conversations in the DevUI site (not AG-UI)
 builder.Services.AddOpenAIConversations();
 
 var agentHost = builder.Build();
@@ -157,13 +174,23 @@ catch (Exception ex)
 agentHost.MapFoundryResponses("/v1");
 agentHost.MapOpenAIConversations();
 
-// Optional diagnostics only; this middleware does not affect request processing or persistence.
-agentHost.UseAGUIRequestLogging();
+if (agentHost.Environment.IsDevelopment())
+{
+    // Optional diagnostics only; this middleware does not affect request processing or persistence.
+    agentHost.UseAGUIRequestLogging();
 
-// The AG-UI server persists session state by protocol thread ID while the custom Cosmos provider
-// retains the durable, model-replayable transcript.
+    agentHost.MapGet("/_diagnostics/ag-ui-failure", (HttpContext context, [FromServices] AgUiFailureDiagnostics diagnostics) =>
+    {
+        var userId = context.Request.Headers["x-agent-user-id"].ToString();
+        return diagnostics.Get(userId) is { } failure
+            ? Results.Text(failure, "text/plain")
+            : Results.NotFound();
+    });
+}
+
+// The AG-UI server persists model history and continuation state by protocol thread ID.
 agentHost.MapAGUIServer(agentName, "/ag-ui");
 
-agentHost.MapConversationEndpoints(agentName, chatHistoryProvider);
+agentHost.MapConversationEndpoints(agentName);
 
 await agentHost.RunAsync();
