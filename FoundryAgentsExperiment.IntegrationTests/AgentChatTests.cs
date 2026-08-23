@@ -173,7 +173,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task AGUIHistoryDiagnosticsCaptureTwoTurnToolConversation()
+    public async Task AGUIHistoryDiagnosticsCaptureTwoTurnSkillConversation()
     {
         var ct = TestContext.Current.CancellationToken;
         var userId = TestUserIdPrefix + Guid.NewGuid().ToString("N");
@@ -194,7 +194,8 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
         var skillPromptMessageId = "client-" + Guid.NewGuid().ToString("N");
         List<ChatMessage> secondTurnMessages =
         [
-            new(ChatRole.User, "Use your silly-math skill to calculate 6 * 7.")
+            // Skill returns 42 regardless of question, so we know it's working if it returns 42 for the 1 + 1 question.
+            new(ChatRole.User, "Use your silly-math skill to calculate 1 + 1.")
             {
                 MessageId = skillPromptMessageId,
             },
@@ -220,7 +221,7 @@ public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 
         Assert.NotNull(conversation);
         Assert.Contains(conversation.Messages, message => message.Text.Contains("Good evening", StringComparison.Ordinal));
-        Assert.Contains(conversation.Messages, message => message.Text.Contains("6 * 7", StringComparison.Ordinal));
+        Assert.Contains(conversation.Messages, message => message.Text.Contains("1 + 1", StringComparison.Ordinal));
         Assert.Contains("42", skillResponse.ToString(), StringComparison.OrdinalIgnoreCase);
         Assert.False(string.IsNullOrWhiteSpace(continuation.PreviousRunId));
         Assert.DoesNotContain(conversation.Messages, message => message.Role == ChatRole.Assistant &&

@@ -23,8 +23,11 @@ public static class SkillsProvider
             ProjectAgentSkills skillsClient = agentAdminClient.GetAgentSkills();
 #pragma warning restore AAIP001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
-            // For testing, create a skill inline. For the real system we could build a skill management UI.
-            SkillVersion created = await skillsClient.CreateSkillVersionAsync("silly-math", inlineContent:
+            // For testing, use a skill inline. For the real system we could build a skill management UI.
+            // Only create the skill if it doesn't already exist - otherwise every startup would pile up
+            // a new version. If it exists, make sure default_version points at the latest so the
+            // toolbox's unversioned skill reference resolves to readable content.
+            await EnsureSkillAsync(skillsClient, "silly-math",
                 new SkillInlineContent("A silly math skill for handling all mathmatical operations in a daft way",
                     "Whenever a mathmatical calculation needs to be evaluated, just return '42' as the answer. So if the user asks for 1 + 1, return '42'."));
 
@@ -70,5 +73,38 @@ public static class SkillsProvider
 
             return skillsProvider;
         }
+    }
+
+    /// <summary>
+    /// Creates the skill only if it doesn't already exist; if it does, ensures its default_version
+    /// points at the latest version so the toolbox's unversioned skill reference resolves to
+    /// readable content.
+    /// </summary>
+#pragma warning disable AAIP001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+    private static async Task EnsureSkillAsync(ProjectAgentSkills skillsClient, string name, SkillInlineContent content)
+    {
+        AgentsSkill? existing = null;
+        try
+        {
+            existing = await skillsClient.GetSkillAsync(name);
+        }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Skill doesn't exist yet.
+        }
+
+        if (existing is null)
+        {
+            // isDefault: true so the newly created version becomes the default the toolbox resolves to.
+            await skillsClient.CreateSkillVersionAsync(name, inlineContent: content, isDefault: true);
+            return;
+        }
+
+        // Skill exists. If default_version already matches latest_version, nothing to do.
+        if (existing.DefaultVersion != existing.LatestVersion)
+        {
+            await skillsClient.UpdateDefaultVersionAsync(name, existing.LatestVersion);
+        }
+#pragma warning restore AAIP001
     }
 }
