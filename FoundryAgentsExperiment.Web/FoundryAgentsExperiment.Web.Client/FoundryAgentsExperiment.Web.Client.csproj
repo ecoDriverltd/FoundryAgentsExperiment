@@ -12,7 +12,7 @@
 	<ItemGroup>
 		<PackageReference Include="AGUI.Client" Version="0.0.5" />
 		<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.11" />
-		<PackageReference Include="Microsoft.Agents.AI" Version="1.18.0" />
+		<PackageReference Include="Microsoft.Agents.AI" Version="1.19.0" />
 		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
 	</ItemGroup>
 
