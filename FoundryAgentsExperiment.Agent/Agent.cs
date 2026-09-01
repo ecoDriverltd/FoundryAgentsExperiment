@@ -100,6 +100,7 @@ var compactionProvider = new CompactionProvider(
         chatClient: summarizerChatClient,
         trigger: CompactionTriggers.TokensExceed(sessionPersistence.CompactionTriggerTokens),
         minimumPreservedGroups: sessionPersistence.CompactionMinimumPreservedGroups));
+
 var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
     cosmosClient,
     databaseId: "agent-history",
@@ -114,6 +115,7 @@ var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
 
         throw new InvalidOperationException("The AG-UI thread ID must be available in the agent session before chat history can be persisted.");
     });
+
 var chatHistoryProvider = new LoggingChatHistoryProvider(
     new DeduplicatingCosmosChatHistoryProvider(
         cosmosChatHistoryProvider,
