@@ -8,7 +8,6 @@ using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Compaction;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Agents.AI.Hosting;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using OpenAI.Responses;
@@ -136,7 +135,7 @@ var modelChatClient = projectClient
 AIAgent agent = modelChatClient
     .AsBuilder()
     // Important that these providers are at this layer. Compaction and memory change what is sent to the LLM, but shouldn't persist in durable storage.
-    .UseAIContextProviders([timingMemoryProvider, compactionProvider])
+    //.UseAIContextProviders([timingMemoryProvider, compactionProvider])
     .BuildAIAgent(new ChatClientAgentOptions
     {
         ChatOptions = new()
@@ -153,9 +152,9 @@ AIAgent agent = modelChatClient
             )]
         },
         Name = agentName,
-        RequirePerServiceCallChatHistoryPersistence = true, // Defaults to true as compaction plus tool calls seems to result in dropped history otherwise.
+        //RequirePerServiceCallChatHistoryPersistence = true, // Defaults to true as compaction plus tool calls seems to result in dropped history otherwise.
         ChatHistoryProvider = chatHistoryProvider,
-        AIContextProviders = [skillsProvider]
+        //AIContextProviders = [skillsProvider]
     });
 
 builder.AddAIAgent(agentName, (_, _) => agent)
