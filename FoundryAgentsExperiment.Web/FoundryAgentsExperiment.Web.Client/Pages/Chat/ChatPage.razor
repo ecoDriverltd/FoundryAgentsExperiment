@@ -2,14 +2,12 @@
 @page "/chat/{ConversationId}"
 @rendermode InteractiveWebAssembly
 
-@using AGUI.Client
 @using FoundryAgentsExperiment.Shared.Models
 @using Microsoft.Agents.AI
 @using Microsoft.Extensions.AI
 @using System.Diagnostics
 
-@inject AGUIChatClient ChatClient
-@inject GeolocationService Geolocation
+@inject ResponsesChatClient ChatClient
 @inject AgentConversationClient ConversationClient
 @inject NavigationManager Nav
 @inject IJSRuntime JS
@@ -52,8 +50,6 @@
     public string? ConversationId { get; set; }
 
     private string? conversationId;
-    private readonly AGUIContinuationState continuation = new();
-    private ChatClientAgent? agent;
     private bool isStreaming;
     private bool isLoadingConversations = true;
     private bool isLoadingConversation;
@@ -69,31 +65,11 @@
 
     private ChatInput? chatInput;
 
-    private static readonly IReadOnlyDictionary<string, ToolPresentationPolicy> ToolPresentationPolicies =
-        new Dictionary<string, ToolPresentationPolicy>(StringComparer.Ordinal)
-        {
-            ["get_user_location"] = new(ShowResult: true, HideFollowingAssistantResponse: true),
-        };
-
-    private bool hideFollowingAssistantResponse;
-
     protected override async Task OnInitializedAsync()
     {
-        // localStorage is only available after WASM is interactive
         if (!RendererInfo.IsInteractive)
             return;
 
-        // Frontend tools are registered when the ChatClientAgent is built, so the agent (and its
-        // tool list) must be constructed here rather than in DI: the geolocation tool closes over
-        // this page's scoped GeolocationService (which wraps IJSRuntime, itself scoped/circuit-bound).
-        AITool[] frontendTools =
-        [
-            AIFunctionFactory.Create(Geolocation.GetUserLocationAsync,
-            name: "get_user_location",
-            description: "Get the user's current location from the browser's GPS.")
-        ];
-
-        this.agent = ChatClient.AsAIAgent(name: "agui-client", description: "AG-UI Client Agent", tools: frontendTools);
         await LoadConversationsAsync();
     }
 
@@ -113,13 +89,11 @@
         this.inProgressMessage = null;
         this.displayMessages.Clear();
         this.functionCallNames.Clear();
-        this.hideFollowingAssistantResponse = false;
 
         try
         {
             await InvokeAsync(StateHasChanged);
             var conversation = await ConversationClient.GetConversationAsync(conversationId);
-            this.continuation.Restore(conversation.ConversationId, previousRunId: null);
 
             foreach (var message in conversation.Messages)
                 AddDisplayMessage(message);
@@ -149,7 +123,6 @@
         var lastVisibleAssistantTextAt = TimeSpan.Zero;
         Console.WriteLine($"[Timing] Chat turn started at={DateTimeOffset.UtcNow:O}");
         CancelStreaming();
-        this.hideFollowingAssistantResponse = false;
 
         // Add to display list immediately
         var userMessage = new ChatMessage(ChatRole.User, userText)
@@ -174,60 +147,32 @@
 
         try
         {
-            // This session exists only while handling this user message, including any client-tool
-            // requests that occur before the response completes. ChatClientAgent stores streamed
-            // messages in it, so retaining it would replay old messages. Cosmos owns conversation
-            // history; ThreadId and ParentRunId resume that hosted conversation for the next message.
-            var session = await this.agent!.CreateSessionAsync(requestCancellation.Token);
-
-            List<ChatMessage> messages =
-            [
-                userMessage
-            ];
-
-            await foreach (var update in this.agent!.RunStreamingAsync(
-                messages,
-                session,
-                options: this.continuation.CreateRunOptions(),
-                cancellationToken: requestCancellation.Token))
+            if (this.conversationId is not { Length: > 0 })
             {
-                this.continuation.Observe(update);
+                this.conversationId = await ChatClient.CreateConversationAsync(requestCancellation.Token);
+                this.hasConversationUrl = true;
+                await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/chat/{this.conversationId}");
+            }
 
-                if (!this.hasConversationUrl && this.continuation.ThreadId is { Length: > 0 } threadId)
+            await foreach (var update in ChatClient.StreamResponseAsync(
+                this.conversationId,
+                userText,
+                requestCancellation.Token))
+            {
+                if (update.Type == "response.output_text.delta" &&
+                    update.Data.TryGetProperty("delta", out var delta))
                 {
-                    this.conversationId = threadId;
-                    this.hasConversationUrl = true;
-                    await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/chat/{threadId}");
-                }
-
-                foreach (var content in update.Contents)
-                {
-                    switch (content)
+                    var text = delta.GetString() ?? string.Empty;
+                    responseText.Text += text;
+                    if (!string.IsNullOrWhiteSpace(text))
                     {
-                        case TextContent text:
-                            if (!this.hideFollowingAssistantResponse)
-                            {
-                                responseText.Text += text.Text;
-                                if (!string.IsNullOrWhiteSpace(text.Text))
-                                {
-                                    if (!receivedVisibleAssistantText)
-                                    {
-                                        receivedVisibleAssistantText = true;
-                                        Console.WriteLine($"[Timing] First visible assistant text elapsedMs={turnStopwatch.ElapsedMilliseconds}");
-                                    }
+                        if (!receivedVisibleAssistantText)
+                        {
+                            receivedVisibleAssistantText = true;
+                            Console.WriteLine($"[Timing] First visible assistant text elapsedMs={turnStopwatch.ElapsedMilliseconds}");
+                        }
 
-                                    lastVisibleAssistantTextAt = turnStopwatch.Elapsed;
-                                }
-                            }
-                            break;
-                        case FunctionCallContent call:
-                            Console.WriteLine($"[Timing] Tool call received callId={call.CallId} elapsedMs={turnStopwatch.ElapsedMilliseconds}");
-                            this.functionCallNames[call.CallId] = call.Name;
-                            break;
-                        case FunctionResultContent result:
-                            Console.WriteLine($"[Timing] Tool result received callId={result.CallId} elapsedMs={turnStopwatch.ElapsedMilliseconds}");
-                            AddVisibleToolResult(result);
-                            break;
+                        lastVisibleAssistantTextAt = turnStopwatch.Elapsed;
                     }
                 }
 
@@ -270,11 +215,9 @@
     {
         CancelStreaming();
         this.conversationId = null;
-        this.continuation.Reset();
         this.hasConversationUrl = false;
         this.displayMessages.Clear();
         this.functionCallNames.Clear();
-        this.hideFollowingAssistantResponse = false;
         this.inProgressMessage = null;
         Nav.NavigateTo("/chat");
     }
@@ -285,7 +228,6 @@
         this.conversationId = conversation.Id;
         this.displayMessages.Clear();
         this.functionCallNames.Clear();
-        this.hideFollowingAssistantResponse = false;
         this.inProgressMessage = null;
         this.isLoadingConversation = true;
         Nav.NavigateTo($"/chat/{conversation.Id}");
@@ -318,29 +260,13 @@
         if ((message.Role == ChatRole.User || message.Role == ChatRole.Assistant) &&
             message.Contents.OfType<TextContent>().Any(content => !string.IsNullOrWhiteSpace(content.Text)))
         {
-            if (message.Role == ChatRole.Assistant && this.hideFollowingAssistantResponse)
-            {
-                this.hideFollowingAssistantResponse = false;
-            }
-            else
-            {
-                this.displayMessages.Add(message);
-            }
+            this.displayMessages.Add(message);
         }
     }
 
     private void AddVisibleToolResult(FunctionResultContent result)
     {
-        if (this.functionCallNames.TryGetValue(result.CallId, out var toolName) &&
-            ToolPresentationPolicies.TryGetValue(toolName, out var policy))
-        {
-            if (policy.ShowResult)
-                this.displayMessages.Add(new ChatMessage(ChatRole.Tool, $"✅ {result.Result}"));
-
-            this.hideFollowingAssistantResponse = policy.HideFollowingAssistantResponse;
-            return;
-        }
-
+        this.functionCallNames.TryGetValue(result.CallId, out var toolName);
         this.displayMessages.Add(new ChatMessage(ChatRole.Tool, $"🔧 {toolName ?? "Tool"}: {result.Result}"));
     }
 
@@ -401,6 +327,4 @@
     }
 
     public void Dispose() => this.streamingCts?.Cancel();
-
-    private sealed record ToolPresentationPolicy(bool ShowResult, bool HideFollowingAssistantResponse);
 }

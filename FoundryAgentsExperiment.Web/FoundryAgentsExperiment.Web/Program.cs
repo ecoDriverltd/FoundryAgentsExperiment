@@ -1,4 +1,3 @@
-using AGUI.Client;
 using FoundryAgentsExperiment.Web.Client.Services;
 using FoundryAgentsExperiment.Web.Components;
 using Yarp.ReverseProxy.Forwarder;
@@ -16,14 +15,10 @@ builder.Services.AddRazorComponents()
 builder.Services.AddHttpForwarderWithServiceDiscovery();
 
 // Register WASM client services on the server so Blazor pre-render can inject them.
-// RendererInfo.IsInteractive guards prevent any browser-only (localStorage) calls during pre-render.
-// ChatClientAgent is built per chat-page instance (not here) so it can be given frontend tools
-// that close over page-scoped, JS-interop-backed services like GeolocationService.
-builder.Services.AddHttpClient<AGUIChatClient>()
-    .AddTypedClient<AGUIChatClient>((http, _) => new AGUIChatClient(new(http, "/ag-ui")));
+// RendererInfo.IsInteractive guards prevent browser requests during pre-render.
+builder.Services.AddHttpClient<ResponsesChatClient>();
 builder.Services.AddHttpClient<AgentConversationClient>();
 builder.Services.AddScoped<UserIdentityService>();
-builder.Services.AddScoped<GeolocationService>();
 
 var app = builder.Build();
 
@@ -54,8 +49,8 @@ app.MapRazorComponents<App>()
 var agentUrl = builder.Configuration["services:agent-dotnet:https:0"]
     ?? throw new InvalidOperationException("Agent service URL not configured. Ensure WithReference(agent) is set in AppHost.");
 
-//Forward / ag-ui straight to the agent host — SSE streams through unbuffered
-app.MapForwarder("/ag-ui", agentUrl,
+// Forward Responses requests straight to the agent host — SSE streams through unbuffered.
+app.MapForwarder("/v1/{**catch-all}", agentUrl,
     new ForwarderRequestConfig { ActivityTimeout = TimeSpan.FromMinutes(5) },
     transformContext =>
     {

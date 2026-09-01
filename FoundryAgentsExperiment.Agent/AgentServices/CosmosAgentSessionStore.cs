@@ -28,7 +28,7 @@ public sealed record AgentSessionEntry(
 /// </summary>
 public sealed class AgentSessionDbContext(DbContextOptions<AgentSessionDbContext> options) : DbContext(options)
 {
-    public const string ConversationIdStateBagKey = "ag-ui-thread-id";
+    public const string ConversationIdStateBagKey = "conversation-id";
 
     public DbSet<AgentSessionEntry> Sessions => Set<AgentSessionEntry>();
 
@@ -47,8 +47,8 @@ public sealed class AgentSessionDbContext(DbContextOptions<AgentSessionDbContext
 }
 
 /// <summary>
-/// AG-UI-facing <see cref="AgentSessionStore"/>. It persists the complete serialized
-/// <see cref="AgentSession"/> by AG-UI thread ID and user ID, including the framework-managed
+/// Responses-facing <see cref="AgentSessionStore"/>. It persists the complete serialized
+/// <see cref="AgentSession"/> by Responses conversation ID and user ID, including the framework-managed
 /// in-memory chat history used to resume model conversations.
 /// Cosmos items are limited to 2 MB; compaction-state persistence has been validated, but durable
 /// transcript retention remains bounded by this store's UTF-8 byte-limit enforcement.
@@ -59,7 +59,7 @@ public sealed class CosmosAgentSessionStore(
     ILogger<CosmosAgentSessionStore> logger,
     IOptions<SessionPersistenceOptions> options) : AgentSessionStore
 {
-    public const string AgUiThreadIdStateBagKey = "AgUiThreadId";
+    public const string ConversationIdStateBagKey = "conversation-id";
 
     private readonly SessionPersistenceOptions options = options.Value;
 
@@ -92,13 +92,13 @@ public sealed class CosmosAgentSessionStore(
             LogSerializedSession("loaded", threadId, existing.SerializedSession, Encoding.UTF8.GetByteCount(existing.SerializedSession));
             using var document = JsonDocument.Parse(existing.SerializedSession);
             var restoredSession = await agent.DeserializeSessionAsync(document.RootElement.Clone(), cancellationToken: cancellationToken);
-            restoredSession.StateBag.SetValue(AgUiThreadIdStateBagKey, threadId);
+            restoredSession.StateBag.SetValue(ConversationIdStateBagKey, threadId);
             LogInMemoryChatHistory("restored", threadId, restoredSession);
             return restoredSession;
         }
 
         var session = await agent.CreateSessionAsync(cancellationToken);
-        session.StateBag.SetValue(AgUiThreadIdStateBagKey, threadId);
+        session.StateBag.SetValue(ConversationIdStateBagKey, threadId);
         logger.LogInformation(
             "[SessionStore] Created new session threadId={ThreadId} userId={UserId} conversationId={ConversationId}",
             threadId,

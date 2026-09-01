@@ -59,7 +59,7 @@ public static class SkillsProvider
 
             // DisableLoadSkillApproval/DisableReadSkillResourceApproval/DisableRunSkillScriptApproval: without
             // these, load_skill (and friends) are human-in-the-loop tools that raise a FunctionApprovalRequest
-            // which nobody ever answers over AG-UI/streaming, so the turn just stalls with a pending
+            // which this application does not answer during streaming, so the turn just stalls with a pending
             // FunctionCallContent and never produces a response. All skills will be internal/trusted anyway in our case.
             var skillsProvider = new AgentSkillsProviderBuilder()
                 .UseMcpSkills(mcpClient)

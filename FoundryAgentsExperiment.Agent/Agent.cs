@@ -8,12 +8,12 @@ using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Compaction;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Agents.AI.Hosting;
-using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using OpenAI.Responses;
 using System.Diagnostics.Tracing;
+using System.Text.Json;
 
 var port = Environment.GetEnvironmentVariable("DEFAULT_AD_PORT") ?? "8088";
 
@@ -38,7 +38,6 @@ builder.Logging.SetMinimumLevel(LogLevel.Trace);
 builder.AddServiceDefaults();
 
 builder.Services.AddHttpClient().AddLogging();
-builder.Services.AddAGUIServer();
 
 // Backs the server-managed agent session store. Connection name must match the AppHost Cosmos resource.
 var cosmosEndpoint = builder.Configuration.GetConnectionString("cosmos")
@@ -51,6 +50,7 @@ Console.WriteLine($"Project Endpoint: {foundrySettings.ProjectUri}");
 Console.WriteLine($"Model Deployment: {foundrySettings.DeploymentName}");
 
 const string agentName = "agent-dotnet";
+const string ResponsesAgentSessionIdItem = "responses-agent-session-id";
 var projectClient = new AIProjectClient(foundrySettings.ProjectUri, credential);
 var openAIClient = projectClient.GetProjectOpenAIClient();
 var modelRequestLoggerFactory = LoggerFactory.Create(logging => logging.AddConsole());
@@ -60,11 +60,10 @@ using var azureSdkDiagnostics = AzureEventSourceListener.CreateConsoleLogger(Eve
 // Shared instance so the memory provider and session store resolve the same request context.
 var httpContextAccessor = new HttpContextAccessor();
 builder.Services.AddSingleton<IHttpContextAccessor>(httpContextAccessor);
-builder.Services.AddSingleton<AgUiFailureDiagnostics>();
 
 builder.Services.AddCosmosAgentSessionStore(agentName);
 
-// Registering this lets MapAGUIServer auto-wrap the AgentSessionStore in an
+// Registering this lets the Responses endpoint auto-wrap the AgentSessionStore in an
 // IsolationKeyScopedAgentSessionStore, the framework's own idiomatic mechanism for scoping
 builder.Services.AddSingleton<AgentIsolationKeyProvider, AgentUserIdIsolationKeyProvider>();
 
@@ -107,13 +106,20 @@ var cosmosChatHistoryProvider = new CosmosChatHistoryProvider(
     containerId: "agent-chat-history",
     stateInitializer: session =>
     {
-        if (session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.AgUiThreadIdStateBagKey, out var threadId) == true &&
+        var agentSessionId = httpContextAccessor.HttpContext?.Items[ResponsesAgentSessionIdItem] as string;
+        if (!string.IsNullOrWhiteSpace(agentSessionId))
+        {
+            session?.StateBag.SetValue(CosmosAgentSessionStore.ConversationIdStateBagKey, agentSessionId);
+            return new CosmosChatHistoryProvider.State(agentSessionId);
+        }
+
+        if (session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.ConversationIdStateBagKey, out var threadId) == true &&
             !string.IsNullOrWhiteSpace(threadId))
         {
             return new CosmosChatHistoryProvider.State(threadId);
         }
 
-        throw new InvalidOperationException("The AG-UI thread ID must be available in the agent session before chat history can be persisted.");
+        throw new InvalidOperationException("The Responses conversation ID must be available in the agent session before chat history can be persisted.");
     });
 
 var chatHistoryProvider = new LoggingChatHistoryProvider(
@@ -122,10 +128,10 @@ var chatHistoryProvider = new LoggingChatHistoryProvider(
         modelRequestLoggerFactory.CreateLogger<DeduplicatingCosmosChatHistoryProvider>()),
     modelRequestLoggerFactory.CreateLogger<LoggingChatHistoryProvider>());
 
-var modelChatClient = new ModelRequestLoggingChatClient(projectClient
+var modelChatClient = projectClient
     .GetProjectOpenAIClient()
     .GetProjectResponsesClient()
-    .AsIChatClientWithStoredOutputDisabled(), modelRequestLogger);
+    .AsIChatClientWithStoredOutputDisabled();
 
 AIAgent agent = modelChatClient
     .AsBuilder()
@@ -158,10 +164,27 @@ builder.AddAIAgent(agentName, (_, _) => agent)
 builder.Services.AddFoundryResponses(agent);
 builder.Services.AddFoundryToolboxes(credential);
 
-// Needed for conversations in the DevUI site (not AG-UI)
+// Needed for conversations in the DevUI site.
 builder.Services.AddOpenAIConversations();
 
 var agentHost = builder.Build();
+
+agentHost.Use(async (context, next) =>
+{
+    if (HttpMethods.IsPost(context.Request.Method) && context.Request.Path.StartsWithSegments("/v1/responses"))
+    {
+        context.Request.EnableBuffering();
+        using var document = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted);
+        context.Request.Body.Position = 0;
+        if (document.RootElement.TryGetProperty("agent_session_id", out var agentSessionId) &&
+            !string.IsNullOrWhiteSpace(agentSessionId.GetString()))
+        {
+            context.Items[ResponsesAgentSessionIdItem] = agentSessionId.GetString()!;
+        }
+    }
+
+    await next(context);
+});
 
 try
 {
@@ -175,23 +198,6 @@ catch (Exception ex)
 // These two seem to let things work in DevUI
 agentHost.MapFoundryResponses("/v1");
 agentHost.MapOpenAIConversations();
-
-if (agentHost.Environment.IsDevelopment())
-{
-    // Optional diagnostics only; this middleware does not affect request processing or persistence.
-    agentHost.UseAGUIRequestLogging();
-
-    agentHost.MapGet("/_diagnostics/ag-ui-failure", (HttpContext context, [FromServices] AgUiFailureDiagnostics diagnostics) =>
-    {
-        var userId = context.Request.Headers["x-agent-user-id"].ToString();
-        return diagnostics.Get(userId) is { } failure
-            ? Results.Text(failure, "text/plain")
-            : Results.NotFound();
-    });
-}
-
-// The AG-UI server persists model history and continuation state by protocol thread ID.
-agentHost.MapAGUIServer(agentName, "/ag-ui");
 
 agentHost.MapConversationEndpoints(agentName);
 

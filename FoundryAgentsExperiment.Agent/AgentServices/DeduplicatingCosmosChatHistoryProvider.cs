@@ -19,7 +19,7 @@ public sealed class DeduplicatingCosmosChatHistoryProvider(
         InvokedContext context,
         CancellationToken cancellationToken = default)
     {
-        var threadId = context.Session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.AgUiThreadIdStateBagKey, out var id) ?? false
+        var threadId = context.Session?.StateBag.TryGetValue<string>(CosmosAgentSessionStore.ConversationIdStateBagKey, out var id) ?? false
             ? id
             : "<unknown>";
         var stopwatch = Stopwatch.StartNew();
