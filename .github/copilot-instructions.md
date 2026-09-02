@@ -35,3 +35,4 @@
 ## Implementation Guidelines
 
 - When the user asks for implementation, proceed immediately after a brief acknowledgment; do not pause awaiting confirmation or narrate a future action without executing it.
+- Validate framework behavior from current documentation, official samples, and inspected source/API definitions before recommending or implementing it. Keep solutions simple and idiomatic; avoid reinventing existing framework capabilities and unsupported assumptions.

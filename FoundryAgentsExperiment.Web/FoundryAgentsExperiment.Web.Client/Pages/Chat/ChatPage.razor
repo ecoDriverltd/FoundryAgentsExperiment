@@ -3,9 +3,9 @@
 @rendermode InteractiveWebAssembly
 
 @using FoundryAgentsExperiment.Shared.Models
-@using Microsoft.Agents.AI
 @using Microsoft.Extensions.AI
 @using System.Diagnostics
+@using System.Text.Json
 
 @inject ResponsesChatClient ChatClient
 @inject AgentConversationClient ConversationClient
@@ -67,6 +67,7 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // localStorage is only available after WASM is interactive
         if (!RendererInfo.IsInteractive)
             return;
 
@@ -94,7 +95,6 @@
         {
             await InvokeAsync(StateHasChanged);
             var conversation = await ConversationClient.GetConversationAsync(conversationId);
-
             foreach (var message in conversation.Messages)
                 AddDisplayMessage(message);
         }
@@ -131,7 +131,8 @@
         };
         this.displayMessages.Add(userMessage);
 
-        // The server loads its own Cosmos-managed transcript; send only the fresh turn.
+        // The Responses host owns the transcript. Send only the current user message and the
+        // standard conversation ID; no client-side history is replayed.
         var responseText = new TextContent(string.Empty);
         this.inProgressMessage = new ChatMessage(ChatRole.Assistant, [responseText]);
         this.isStreaming = true;
@@ -147,33 +148,37 @@
 
         try
         {
-            if (this.conversationId is not { Length: > 0 })
-            {
-                this.conversationId = await ChatClient.CreateConversationAsync(requestCancellation.Token);
-                this.hasConversationUrl = true;
-                await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/chat/{this.conversationId}");
-            }
-
             await foreach (var update in ChatClient.StreamResponseAsync(
                 this.conversationId,
                 userText,
                 requestCancellation.Token))
             {
-                if (update.Type == "response.output_text.delta" &&
-                    update.Data.TryGetProperty("delta", out var delta))
+                switch (update.Type)
                 {
-                    var text = delta.GetString() ?? string.Empty;
-                    responseText.Text += text;
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        if (!receivedVisibleAssistantText)
+                    case "response.created":
+                        if (!this.hasConversationUrl && TryGetConversationId(update.Data, out var conversationId))
                         {
-                            receivedVisibleAssistantText = true;
-                            Console.WriteLine($"[Timing] First visible assistant text elapsedMs={turnStopwatch.ElapsedMilliseconds}");
+                            this.conversationId = conversationId;
+                            this.hasConversationUrl = true;
+                            await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/chat/{conversationId}");
                         }
+                        break;
+                    case "response.output_text.delta":
+                        var text = update.Data.GetProperty("delta").GetString();
+                        responseText.Text += text;
+                        if (!string.IsNullOrWhiteSpace(text))
+                        {
+                            if (!receivedVisibleAssistantText)
+                            {
+                                receivedVisibleAssistantText = true;
+                                Console.WriteLine($"[Timing] First visible assistant text elapsedMs={turnStopwatch.ElapsedMilliseconds}");
+                            }
 
-                        lastVisibleAssistantTextAt = turnStopwatch.Elapsed;
-                    }
+                            lastVisibleAssistantTextAt = turnStopwatch.Elapsed;
+                        }
+                        break;
+                    case "response.failed":
+                        throw new InvalidOperationException("The Responses request failed.");
                 }
 
                 await InvokeAsync(StateHasChanged);
@@ -181,7 +186,7 @@
 
             completed = true;
             Console.WriteLine(
-                $"[Timing] AG-UI stream completed elapsedMs={turnStopwatch.ElapsedMilliseconds} " +
+                $"[Timing] Chat stream completed elapsedMs={turnStopwatch.ElapsedMilliseconds} " +
                 $"afterLastVisibleTextMs={(receivedVisibleAssistantText ? (turnStopwatch.Elapsed - lastVisibleAssistantTextAt).TotalMilliseconds : 0):F0}");
         }
         catch (OperationCanceledException)
@@ -292,6 +297,19 @@
 
     }
 
+    private static bool TryGetConversationId(System.Text.Json.JsonElement data, out string conversationId)
+    {
+        conversationId = string.Empty;
+        if (!data.TryGetProperty("response", out var response) ||
+            !response.TryGetProperty("conversation", out var conversation))
+            return false;
+
+        conversationId = conversation.ValueKind == System.Text.Json.JsonValueKind.String
+            ? conversation.GetString() ?? string.Empty
+            : conversation.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty;
+        return !string.IsNullOrWhiteSpace(conversationId);
+    }
+
     private static string? Truncate(string? text, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -327,4 +345,5 @@
     }
 
     public void Dispose() => this.streamingCts?.Cancel();
+
 }

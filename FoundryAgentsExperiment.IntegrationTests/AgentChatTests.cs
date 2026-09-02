@@ -1,221 +1,207 @@
 using Aspire.Hosting;
+using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
-using Azure.Core;
+using Azure.AI.Projects;
 using Azure.Identity;
-using FoundryAgentsExperiment.Shared.Models;
-using Microsoft.Azure.Cosmos;
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using OpenAI;
+using OpenAI.Responses;
+using System.ClientModel;
+using System.ClientModel.Primitives;
 using System.Collections.Concurrent;
-using System.Net;
-using System.Net.Http.Json;
-using System.Text.Json;
+using System.Data.Common;
+using System.Text;
 using Xunit;
 
 namespace FoundryAgentsExperiment.IntegrationTests;
 
 [Trait("Category", "Integration")]
-public sealed class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
+public class AgentChatTests(ITestOutputHelper output) : IAsyncLifetime
 {
     private const string TestUserIdPrefix = "integration-test-";
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(2);
     private readonly ITestOutputHelper output = output;
-    private readonly ConcurrentDictionary<string, byte> testUserIds = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<string> agentDiagnostics = new();
     private DistributedApplication? app;
-    private string? cosmosConnectionString;
+    private CancellationTokenSource? resourceLogCts;
+    private Task? resourceLogTask;
 
     public async ValueTask InitializeAsync()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.FoundryAgentsExperiment_AppHost>(
-            args: [],
-            cancellationToken: cancellationToken);
+        Environment.SetEnvironmentVariable("DOTNET_STARTUP_HOOKS", null);
+        Environment.SetEnvironmentVariable("DOTNET_MODIFIABLE_ASSEMBLIES", null);
+
+        var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.FoundryAgentsExperiment_AppHost>(args: [], cancellationToken: cancellationToken);
+        builder.Services.ConfigureHttpClientDefaults(clientBuilder => clientBuilder.AddStandardResilienceHandler(options =>
+        {
+            options.AttemptTimeout.Timeout = TimeSpan.FromMinutes(2);
+            options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(5);
+            options.CircuitBreaker.SamplingDuration = options.AttemptTimeout.Timeout * 2;
+        }));
 
         this.app = await builder.BuildAsync(cancellationToken).WaitAsync(StartupTimeout, cancellationToken);
         await this.app.StartAsync(cancellationToken).WaitAsync(StartupTimeout, cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-test-sw", cancellationToken);
         await this.app.ResourceNotifications.WaitForResourceHealthyAsync("agent-dotnet", cancellationToken);
-        this.cosmosConnectionString = await this.app.GetConnectionStringAsync("cosmos")
-            ?? throw new InvalidOperationException("No Cosmos connection string is available for integration-test cleanup.");
+
+        this.resourceLogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var resourceLogger = this.app.Services.GetRequiredService<ResourceLoggerService>();
+        this.resourceLogTask = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var batch in resourceLogger.WatchAsync("agent-dotnet").WithCancellation(this.resourceLogCts.Token))
+                {
+                    foreach (var (_, content, _) in batch)
+                    {
+                        this.agentDiagnostics.Enqueue(content);
+                        this.output.WriteLine(content);
+                    }
+                }
+            }
+            catch (Exception exception) when (this.resourceLogCts.IsCancellationRequested &&
+                (exception is OperationCanceledException or HttpRequestException or IOException))
+            {
+            }
+        });
     }
 
     public async ValueTask DisposeAsync()
     {
-        await this.DeleteTestSessionsAsync(TestContext.Current.CancellationToken);
+        this.resourceLogCts?.Cancel();
+        if (this.resourceLogTask is not null)
+            await this.resourceLogTask;
+
+        this.resourceLogCts?.Dispose();
         if (this.app is not null)
             await this.app.DisposeAsync();
     }
 
-    [Fact]
-    public async Task ResponsesEndpointStreamsAssistantText()
+    [Fact(Timeout = 60_000)]
+    public async Task ChatStreamExecutesServerToolAndPersistsConversation()
     {
-        var conversation = await this.CreateConversationAsync(TestContext.Current.CancellationToken);
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var userId = NewUserId();
+        var agent = CreateClientAgent(userId);
+        var session = await agent.CreateSessionAsync(cancellationToken);
+
+        var response = await RunTurnAsync(agent, session, "What is the current UTC date and time? Use the get_current_date_time tool.", cancellationToken);
+
+        Assert.False(string.IsNullOrWhiteSpace(((ChatClientAgentSession)session).ConversationId));
+        Assert.NotEmpty(response.Text);
+        Assert.Contains(response.Contents, content => content is FunctionCallContent { Name: "get_current_date_time" });
+        Assert.Contains(response.Contents, content => content is FunctionResultContent);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ChatStreamResumesResponseContinuation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var userId = NewUserId();
+        var agent = CreateClientAgent(userId);
+        var session = await agent.CreateSessionAsync(cancellationToken);
+        const string firstPrompt = "Remember that my favorite color is BLUE42.";
+        const string secondPrompt = "What is my favorite color?";
+
+        await RunTurnAsync(agent, session, firstPrompt, cancellationToken);
+        var firstResponseId = ((ChatClientAgentSession)session).ConversationId;
+        var second = await RunTurnAsync(agent, session, secondPrompt, cancellationToken);
+
+        Assert.False(string.IsNullOrWhiteSpace(firstResponseId));
+        Assert.NotEqual(firstResponseId, ((ChatClientAgentSession)session).ConversationId);
+        Assert.Contains("BLUE42", second.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task LocalAgentTurnsDoNotPopulateProjectConversationHistory()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var credential = new ChainedTokenCredential(new VisualStudioCredential(), new VisualStudioCodeCredential());
+        var projectConnectionString = await this.app!.GetConnectionStringAsync("agent-test-sw", cancellationToken);
+        var projectEndpoint = new Uri(GetConnectionStringValue(projectConnectionString!, "Endpoint"));
+        var projectClient = new AIProjectClient(projectEndpoint, credential);
+        var projectOpenAIClient = projectClient.ProjectOpenAIClient;
+        var conversationsClient = projectOpenAIClient.GetProjectConversationsClient();
+        var conversation = await conversationsClient.CreateProjectConversationAsync(cancellationToken: cancellationToken);
+        var conversationId = conversation.Value.Id;
+
+        try
         {
-            Content = JsonContent.Create(new
-            {
-                agent_session_id = conversation.Id,
-                input = "Say hello in exactly one short sentence.",
-                stream = true,
-            }),
-        };
-        using var response = await conversation.Http.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            TestContext.Current.CancellationToken);
+            var agent = CreateClientAgent(NewUserId());
+            var session = await agent.CreateSessionAsync(conversationId, cancellationToken);
+            await RunTurnAsync(agent, session, "Remember that my favorite color is BLUE42.", cancellationToken);
 
-        response.EnsureSuccessStatusCode();
-        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
-        var stream = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
-        this.output.WriteLine(stream);
-        Assert.Contains("event: response.created", stream, StringComparison.Ordinal);
-        Assert.Contains("event: response.output_text.delta", stream, StringComparison.Ordinal);
-        Assert.Contains("event: response.completed", stream, StringComparison.Ordinal);
+            // Create a fresh session to emulate a user returning to a conversation.
+            var session2 = await agent.CreateSessionAsync(conversationId, cancellationToken);
+            var second = await RunTurnAsync(agent, session2, "What is my favorite color? Reply with only the color.", cancellationToken);
+            Assert.Contains("BLUE42", second.Text, StringComparison.OrdinalIgnoreCase);
+
+            var items = new List<ResponseItem>();
+            await foreach (var item in conversationsClient.GetProjectConversationItemsAsync(conversationId, cancellationToken: cancellationToken))
+                items.Add(item);
+
+            Assert.Empty(items);
+        }
+        finally
+        {
+            await conversationsClient.DeleteConversationAsync(conversationId, cancellationToken);
+        }
     }
 
-    [Fact]
-    public async Task ResponsesServerToolPersistsConversationWithoutDuplicateHistory()
-    {
-        var conversation = await this.CreateConversationAsync(TestContext.Current.CancellationToken);
-        const string firstPrompt = "Hello.";
-        const string toolPrompt = "Use the get_current_date_time tool and tell me the current UTC time.";
-
-        await RunTurnAsync(conversation, firstPrompt, TestContext.Current.CancellationToken);
-        var toolResponse = await RunTurnAsync(conversation, toolPrompt, TestContext.Current.CancellationToken);
-
-        Assert.False(string.IsNullOrWhiteSpace(toolResponse));
-        var history = await this.ReadPersistedChatHistoryAsync(conversation.Id, TestContext.Current.CancellationToken);
-        AssertUserPromptOccursOnce(history, firstPrompt);
-        AssertUserPromptOccursOnce(history, toolPrompt);
-        Assert.Contains(history, message => HasContentType(message, "functionCall"));
-        Assert.Contains(history, message => HasContentType(message, "functionResult"));
-    }
-
-    [Fact]
-    public async Task ResponsesConversationEndpointsReturnTranscriptAndEnforceOwnership()
-    {
-        var conversation = await this.CreateConversationAsync(TestContext.Current.CancellationToken);
-        var prompt = $"Conversation endpoint integration test {Guid.NewGuid():N}.";
-        await RunTurnAsync(conversation, prompt, TestContext.Current.CancellationToken);
-
-        var conversations = await conversation.Http.GetFromJsonAsync<List<ConversationSummary>>(
-            "/conversations",
-            TestContext.Current.CancellationToken);
-        Assert.Contains(conversations!, item => item.Id == conversation.Id);
-
-        var transcript = await conversation.Http.GetFromJsonAsync<ConversationDetail>(
-            $"/conversations/{Uri.EscapeDataString(conversation.Id)}",
-            TestContext.Current.CancellationToken);
-        Assert.NotNull(transcript);
-        Assert.Contains(transcript.Messages, message => message.Role == Microsoft.Extensions.AI.ChatRole.User && message.Text == prompt);
-
-        using var otherUserHttp = this.CreateAgentHttpClient(TestUserIdPrefix + Guid.NewGuid().ToString("N"));
-        using var otherUserResponse = await otherUserHttp.GetAsync(
-            $"/conversations/{Uri.EscapeDataString(conversation.Id)}",
-            TestContext.Current.CancellationToken);
-        Assert.Equal(HttpStatusCode.NotFound, otherUserResponse.StatusCode);
-    }
-
-    private async Task<ResponsesConversation> CreateConversationAsync(CancellationToken cancellationToken)
+    private string NewUserId()
     {
         var userId = TestUserIdPrefix + Guid.NewGuid().ToString("N");
-        var http = this.CreateAgentHttpClient(userId);
-        return new ResponsesConversation(http, $"session_{Guid.NewGuid():N}");
+        return userId;
     }
 
-    private static async Task<string> RunTurnAsync(ResponsesConversation conversation, string prompt, CancellationToken cancellationToken)
+    private ChatClientAgent CreateClientAgent(string userId)
     {
-        using var response = await conversation.Http.PostAsJsonAsync("/v1/responses", new
+        var agentHost = CreateAgentHost(userId);
+        var openAIOptions = new OpenAIClientOptions
         {
-            agent_session_id = conversation.Id,
-            input = prompt,
-            stream = false,
-        }, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-        return string.Concat(document.RootElement.GetProperty("output")
-            .EnumerateArray()
-            .Where(item => item.TryGetProperty("type", out var type) && type.GetString() == "message")
-            .SelectMany(item => item.GetProperty("content").EnumerateArray())
-            .Where(content => content.TryGetProperty("type", out var type) && type.GetString() == "output_text")
-            .Select(content => content.GetProperty("text").GetString()));
+            Endpoint = new Uri(agentHost.BaseAddress!, "v1/"),
+            Transport = new HttpClientPipelineTransport(agentHost),
+        };
+
+        return new OpenAIClient(new ApiKeyCredential("integration-test"), openAIOptions)
+            .GetResponsesClient()
+            .AsAIAgent(model: "agent-dotnet");
     }
 
-    private HttpClient CreateAgentHttpClient(string userId)
+    private HttpClient CreateAgentHost(string userId)
     {
-        this.testUserIds.TryAdd(userId, 0);
-        var http = this.app!.CreateHttpClient("agent-dotnet");
-        http.DefaultRequestHeaders.Add("x-agent-user-id", userId);
-        return http;
+        var agentHost = this.app!.CreateHttpClient("agent-dotnet");
+        agentHost.DefaultRequestHeaders.Add("x-agent-user-id", userId);
+        return agentHost;
     }
 
-    private async Task DeleteTestSessionsAsync(CancellationToken cancellationToken)
+    private static string GetConnectionStringValue(string connectionString, string key)
     {
-        if (this.cosmosConnectionString is null)
-            return;
+        DbConnectionStringBuilder builder = new() { ConnectionString = connectionString };
+        return builder.TryGetValue(key, out object? value) && value is string text && !string.IsNullOrWhiteSpace(text)
+            ? text
+            : throw new InvalidOperationException($"Connection string is missing '{key}'.");
+    }
 
-        using var cosmosClient = new CosmosClient(this.cosmosConnectionString, GetCredential());
-        var sessions = cosmosClient.GetContainer("agent-history", "agent-sessions");
-        var history = cosmosClient.GetContainer("agent-history", "agent-chat-history");
-        foreach (var userId in this.testUserIds.Keys)
+    private static async Task<StreamedChatResponse> RunTurnAsync(
+        ChatClientAgent agent,
+        AgentSession session,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var text = new StringBuilder();
+        var contents = new List<AIContent>();
+        await foreach (var update in agent.RunStreamingAsync(message, session, cancellationToken: cancellationToken))
         {
-            var query = new QueryDefinition("SELECT c.id FROM c WHERE c.userId = @userId").WithParameter("@userId", userId);
-            using var iterator = sessions.GetItemQueryIterator<StoredId>(query);
-            while (iterator.HasMoreResults)
-            {
-                foreach (var session in await iterator.ReadNextAsync(cancellationToken))
-                {
-                    using var historyIterator = history.GetItemQueryIterator<StoredId>(
-                        new QueryDefinition("SELECT c.id FROM c WHERE c.conversationId = @conversationId").WithParameter("@conversationId", session.Id),
-                        requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(session.Id) });
-                    while (historyIterator.HasMoreResults)
-                    {
-                        foreach (var item in await historyIterator.ReadNextAsync(cancellationToken))
-                            await history.DeleteItemAsync<StoredId>(item.Id, new PartitionKey(session.Id), cancellationToken: cancellationToken);
-                    }
-
-                    await sessions.DeleteItemAsync<StoredId>(session.Id, new PartitionKey(userId), cancellationToken: cancellationToken);
-                }
-            }
-        }
-    }
-
-    private async Task<List<JsonElement>> ReadPersistedChatHistoryAsync(string conversationId, CancellationToken cancellationToken)
-    {
-        using var cosmosClient = new CosmosClient(this.cosmosConnectionString, GetCredential());
-        var container = cosmosClient.GetContainer("agent-history", "agent-chat-history");
-        var query = new QueryDefinition("SELECT c.message FROM c WHERE c.conversationId = @conversationId")
-            .WithParameter("@conversationId", conversationId);
-        using var iterator = container.GetItemQueryIterator<StoredMessage>(
-            query,
-            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(conversationId) });
-        var messages = new List<JsonElement>();
-        while (iterator.HasMoreResults)
-        {
-            foreach (var item in await iterator.ReadNextAsync(cancellationToken))
-            {
-                using var document = JsonDocument.Parse(item.Message);
-                messages.Add(document.RootElement.Clone());
-            }
+            contents.AddRange(update.Contents);
+            text.Append(string.Concat(update.Contents.OfType<TextContent>().Select(content => content.Text)));
         }
 
-        return messages;
+        return new StreamedChatResponse(text.ToString(), contents);
     }
 
-    private static void AssertUserPromptOccursOnce(IEnumerable<JsonElement> messages, string prompt) =>
-        Assert.Equal(1, messages.Count(message =>
-            message.TryGetProperty("role", out var role) && role.GetString() == "user" &&
-            message.TryGetProperty("contents", out var contents) &&
-            contents.EnumerateArray().Any(content => content.TryGetProperty("text", out var text) && text.GetString() == prompt)));
-
-    private static bool HasContentType(JsonElement message, string type) =>
-        message.TryGetProperty("contents", out var contents) &&
-        contents.EnumerateArray().Any(content => content.TryGetProperty("$type", out var contentType) && contentType.GetString() == type);
-
-    private sealed record ResponsesConversation(HttpClient Http, string Id);
-    private sealed record StoredId(string Id);
-    private sealed record StoredMessage(string Message);
-
-    private static TokenCredential GetCredential() => new ChainedTokenCredential(
-        new VisualStudioCredential(),
-        new VisualStudioCodeCredential(),
-        new DefaultAzureCredential());
+    private sealed record StreamedChatResponse(string Text, IReadOnlyList<AIContent> Contents);
 }

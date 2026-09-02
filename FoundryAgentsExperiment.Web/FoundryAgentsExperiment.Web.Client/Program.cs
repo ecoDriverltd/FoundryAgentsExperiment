@@ -10,8 +10,7 @@ builder.Services.AddScoped<UserIdentityService>();
 // User identity is a server-side concern: the Web host's YARP transform derives x-agent-user-id
 // from the authenticated request, not from anything the client sends.
 builder.Services.AddHttpClient<ResponsesChatClient>(client =>
-    client.BaseAddress = new Uri(builder.HostEnvironment.BaseAddress))
-    .AddTypedClient<ResponsesChatClient>();
+    client.BaseAddress = new Uri(builder.HostEnvironment.BaseAddress));
 
 builder.Services.AddHttpClient<AgentConversationClient>(client =>
     client.BaseAddress = new Uri(builder.HostEnvironment.BaseAddress));
