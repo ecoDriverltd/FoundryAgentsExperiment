@@ -10,7 +10,7 @@ public sealed class LoggingChatHistoryProvider(
 {
     public override IReadOnlyList<string> StateKeys => inner.StateKeys;
 
-    protected override async ValueTask<IEnumerable<ChatMessage>> ProvideChatHistoryAsync(
+    protected override async ValueTask<IEnumerable<ChatMessage>> InvokingCoreAsync(
         InvokingContext context,
         CancellationToken cancellationToken = default)
     {

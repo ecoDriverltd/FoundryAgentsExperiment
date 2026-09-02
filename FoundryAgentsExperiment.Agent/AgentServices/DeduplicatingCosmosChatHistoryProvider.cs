@@ -10,7 +10,7 @@ public sealed class DeduplicatingCosmosChatHistoryProvider(
 {
     public override IReadOnlyList<string> StateKeys => inner.StateKeys;
 
-    protected override ValueTask<IEnumerable<ChatMessage>> ProvideChatHistoryAsync(
+    protected override ValueTask<IEnumerable<ChatMessage>> InvokingCoreAsync(
         InvokingContext context,
         CancellationToken cancellationToken = default) =>
         inner.InvokingAsync(context, cancellationToken);

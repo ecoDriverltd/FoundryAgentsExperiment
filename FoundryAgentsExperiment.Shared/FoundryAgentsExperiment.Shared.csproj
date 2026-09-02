@@ -7,9 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-	<PackageReference Include="AGUI.Abstractions" Version="0.0.5" />
-	<PackageReference Include="Microsoft.Agents.AI" Version="1.19.0" />
-    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.19.0" />
+	<PackageReference Include="AGUI.Abstractions" Version="0.0.6" />
+	<PackageReference Include="Microsoft.Agents.AI" Version="1.20.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.20.0" />
   </ItemGroup>
 
 </Project>

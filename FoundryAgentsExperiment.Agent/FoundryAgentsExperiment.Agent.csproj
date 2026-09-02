@@ -6,18 +6,18 @@
     <AssemblyName>agent</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <NoWarn>$(NoWarn);NU1903</NoWarn>
+    <NoWarn>$(NoWarn);NU1903;OPENAI001;</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Microsoft.EntityFrameworkCore.Cosmos" Version="13.5.2" />
-    <PackageReference Include="Microsoft.Agents.AI.CosmosNoSql" Version="1.19.0-preview.260822.1" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.19.0" />
-    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.19.0-preview.260822.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.19.0-preview.260822.1" />
-    <PackageReference Include="Azure.AI.Projects" Version="2.1.0-beta.4" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.19.0-preview.260822.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Mcp" Version="1.19.0-alpha.260822.1" />
+    <PackageReference Include="Aspire.Microsoft.EntityFrameworkCore.Cosmos" Version="13.5.3" />
+    <PackageReference Include="Microsoft.Agents.AI.CosmosNoSql" Version="1.20.0-preview.260831.1" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.20.0" />
+    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.20.0-preview.260831.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.20.0-preview.260831.1" />
+    <PackageReference Include="Azure.AI.Projects" Version="3.0.0-beta.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.20.0-preview.260831.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Mcp" Version="1.20.0-alpha.260831.1" />
   </ItemGroup>
 
   <ItemGroup>
